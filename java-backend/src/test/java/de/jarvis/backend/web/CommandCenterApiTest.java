@@ -99,4 +99,16 @@ class CommandCenterApiTest {
                 .exchange().expectStatus().isOk();
         assertTrue(calls.containsAll(List.of("GET /internal/faehigkeiten", "POST /internal/faehigkeiten/abc123/abbrechen")), calls.toString());
     }
+
+    @Test
+    void skillBibliothekSchreibtNurMitSchreibrecht() {
+        web.post().uri("/api/faehigkeiten/starten").bodyValue(Map.of("name", "github_suchen", "args", Map.of())).exchange().expectStatus().isForbidden();
+        web.post().uri("/api/skills/aktivieren").header("Origin", "http://localhost:8080").bodyValue(Map.of("id", "x:y", "aktiv", true))
+                .exchange().expectStatus().isForbidden();
+        web.post().uri("/api/faehigkeiten/starten").header("Origin", "http://localhost:8080").header("X-Jarvis", "1")
+                .bodyValue(Map.of("name", "github_suchen", "args", Map.of("begriff", "x"))).exchange().expectStatus().isOk();
+        web.post().uri("/api/skills/aktivieren").header("Origin", "http://localhost:8080").header("X-Jarvis", "1")
+                .bodyValue(Map.of("id", "importiert:a/b", "aktiv", false)).exchange().expectStatus().isOk();
+        assertTrue(calls.containsAll(List.of("POST /internal/faehigkeiten/starten", "POST /internal/skills/aktivieren")), calls.toString());
+    }
 }

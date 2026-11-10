@@ -105,13 +105,37 @@ export type Settings = {
 export type BusEvent = { seq: number; typ: string; [key: string]: any };
 /** Jarvis-Laufzeitfähigkeit (ausführbar, aus jarvis/faehigkeiten.py) – nicht zu verwechseln mit Markdown-Skills. */
 export type Capability = {
-  name: string; titel: string; beschreibung: string; berechtigung: "lesen" | "lokal" | "extern"; berechtigung_text: string;
-  abbrechbar: boolean; eingabe: { properties: Record<string, { description?: string }>; required: string[] };
+  name: string; titel: string; beschreibung: string; berechtigung: string; berechtigung_text: string;
+  abbrechbar: boolean; eingabe: { properties: Record<string, { description?: string; enum?: string[] }>; required: string[] };
+  zeitlimit_s?: number; art?: "ausfuehrbar" | "skill" | "cloud"; version?: string; herkunft?: string; aktiviert?: boolean; sperrgrund?: string;
+};
+/** Jarvis-Skill (Markdown-Anleitung) mit prüfbarer Definition aus jarvis/skill_laufzeit.py. */
+export type SkillDefinition = {
+  id: string; name: string; beschreibung: string; version: string; herkunft: "mitgeliefert" | "eigen" | "importiert";
+  quelle: string; commit: string; art: string; werkzeuge: string[]; fehlende_werkzeuge: string[];
+  rahmen: "frei" | "deklariert" | "nur_lesen"; berechtigungen: Record<string, string[]>; bestaetigung: string;
+  zeitlimit_s: number; abbrechbar: boolean; aktiviert: boolean; sperrgrund: string; verdachtsstellen: number;
+};
+export type Platform = {
+  faehigkeiten: Capability[]; laeufe: CapabilityRun[]; skills: SkillDefinition[];
+  berechtigungen: Record<string, string>; freigabepflichtig: string[];
+  github: { git: boolean; token: boolean; freigegeben: string[]; privat_moeglich: boolean };
+  cloud: { erlaubt: string[]; verfuegbar: string[]; sperrgrund: string; anbieter: string };
+};
+export type GitHubSummary = {
+  repo: string; url: string; commit: string; ref: string; privat: boolean; geladen: string; arbeitsbereich: string;
+  titel: string; beschreibung: string; readme_auszug: string; readme_datei: string; readme_verdacht: number;
+  lizenz: { datei: string; erkannt: string; laut_github: string };
+  struktur: { oberste_ebene: string[]; dateien: number; groesse_kb: number; dateitypen: string[] };
+  stack: { manifeste: string[]; sprachen: string[]; abhaengigkeiten: string[] };
+  skill_dateien: string[]; hinweis: string;
 };
 export type CapabilityRun = {
   id: string; faehigkeit: string; quelle: string; status: "RUNNING" | "PLANNED" | "COMPLETED" | "FAILED" | "CANCELLED" | "WAITING_FOR_APPROVAL";
-  start: number; ende: number | null; eingabe: Record<string, string>; ergebnis: { text?: string; auftrag_id?: string; titel?: string; [k: string]: unknown } | null;
-  fehler: string | null; abbrechbar: boolean;
+  start: number; ende: number | null; eingabe: Record<string, string>;
+  ergebnis: { text?: string; auftrag_id?: string; titel?: string; github?: GitHubSummary;
+    treffer?: { repo: string; beschreibung: string; sterne: number; sprache: string; lizenz: string; url: string }[]; [k: string]: unknown } | null;
+  fehler: string | null; abbrechbar: boolean; fortschritt?: string; schritte?: { werkzeug: string; status: string }[]; wiederholbar?: boolean;
 };
 export type LogEntry = Record<string, unknown>;
 
@@ -176,7 +200,10 @@ export const api = {
   events: (after: number, timeout: number, signal?: AbortSignal) =>
     fetch(`/api/events?after=${after}&timeout=${timeout}`, { credentials: "same-origin", signal })
       .then(async (r) => { if (!r.ok) throw new ApiError(r.status, `Ereignisse nicht erreichbar (${r.status})`); return r.json() as Promise<{ events: BusEvent[]; seq: number }>; }),
-  capabilities: () => call<{ faehigkeiten: Capability[]; laeufe: CapabilityRun[] }>("GET", "/api/faehigkeiten"),
+  capabilities: () => call<Platform>("GET", "/api/faehigkeiten"),
+  startCapability: (name: string, args: Record<string, unknown>) =>
+    call<{ lauf: CapabilityRun }>("POST", "/api/faehigkeiten/starten", { name, args }),
+  setSkillActive: (id: string, aktiv: boolean) => call<{ ok: boolean }>("POST", "/api/skills/aktivieren", { id, aktiv }),
   capabilityAction: (id: string, aktion: "abbrechen" | "wiederholen") =>
     call<{ abgebrochen?: boolean; lauf?: CapabilityRun }>("POST", `/api/faehigkeiten/${encodeURIComponent(id)}/${aktion}`, {}),
   decide: (id: string, aktion: "freigeben" | "verwerfen") =>

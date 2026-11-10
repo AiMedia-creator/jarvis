@@ -81,7 +81,9 @@ def voice_tools() -> list[Tool]:
     ]
     from . import runtime
 
-    return [*all_tools(skills.load_all(), config.get('model', 'sonnet')), *extra, runtime.background_tool()]
+    from . import skill_laufzeit
+
+    return [*all_tools(skill_laufzeit.load_active(), config.get('model', 'sonnet')), *extra, runtime.background_tool()]
 
 
 def run_tool(name: str, args: dict) -> str:

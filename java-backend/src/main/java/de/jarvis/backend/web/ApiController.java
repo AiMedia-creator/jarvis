@@ -231,6 +231,18 @@ public final class ApiController {
         return forward("GET", "/internal/faehigkeiten", null);
     }
 
+    @PostMapping("/api/faehigkeiten/starten")
+    public Mono<ResponseEntity<?>> faehigkeitStarten(@RequestBody Mono<Map<String, Object>> body, ServerWebExchange exchange) {
+        if (!writeAllowed(exchange)) return Mono.just(ResponseEntity.status(403).body(Map.of("fehler", "Session, Origin und X-Jarvis erforderlich.")));
+        return body.flatMap(value -> forward("POST", "/internal/faehigkeiten/starten", value));
+    }
+
+    @PostMapping("/api/skills/aktivieren")
+    public Mono<ResponseEntity<?>> skillAktivieren(@RequestBody Mono<Map<String, Object>> body, ServerWebExchange exchange) {
+        if (!writeAllowed(exchange)) return Mono.just(ResponseEntity.status(403).body(Map.of("fehler", "Session, Origin und X-Jarvis erforderlich.")));
+        return body.flatMap(value -> forward("POST", "/internal/skills/aktivieren", value));
+    }
+
     @PostMapping("/api/faehigkeiten/{id}/{aktion}")
     public Mono<ResponseEntity<?>> faehigkeitAktion(@PathVariable String id, @PathVariable String aktion, ServerWebExchange exchange) {
         if (!writeAllowed(exchange)) return Mono.just(ResponseEntity.status(403).body(Map.of("fehler", "Session, Origin und X-Jarvis erforderlich.")));

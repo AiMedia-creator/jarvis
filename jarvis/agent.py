@@ -545,7 +545,9 @@ class Agent:
         self.reload()
 
     def reload(self) -> None:
-        self.skills = skills.load_all()
+        from . import skill_laufzeit
+
+        self.skills = skill_laufzeit.load_active()  # deaktivierte Skills sind weder im Katalog noch lesbar
         # Voice prompt construction uses a lightweight Agent.__new__ instance.
         # Keep tool registration usable before a full Agent has selected its model.
         strategy_model = getattr(self, "model", MODELS.get(config.get("model", "sonnet"), config.get("model", "sonnet")))
@@ -1223,6 +1225,12 @@ class Agent:
         if scope is not None and call.name not in scope:  # zweite Sperre, falls das Modell es dennoch versucht
             return {"type": "tool_result", "tool_use_id": call.id, "is_error": True,
                     "content": f"Fehler: Werkzeug {call.name} ist im Rahmen dieses Ablaufs nicht erlaubt."}
+        # Skill-Rahmen (im Code, nicht nur im Prompt): nach lies_skill darf dieser Zug nur die Werkzeuge der Skill nutzen.
+        active = getattr(self, "_skill_scope", None)
+        if active and active[0] == getattr(self, "_turn_no", None) and active[2] is not None and call.name not in active[2]:
+            return {"type": "tool_result", "tool_use_id": call.id, "is_error": True,
+                    "content": f"Fehler: Die Skill '{active[1]}' darf das Werkzeug {call.name} nicht verwenden "
+                               f"(erlaubt: {', '.join(sorted(active[2])) or 'keine'})."}
         guard = dict(source=self.channel, conversation=self.conversation_id,
                      turn=getattr(self, "_turn_no", None), channel=self.channel)
         from . import schutz
@@ -1255,6 +1263,11 @@ class Agent:
                 output = policy.execute(self.tools[call.name], args, **guard)
             else:
                 raise ToolFailure(f"Unbekanntes Werkzeug: {call.name}")
+            if call.name == "lies_skill" and isinstance(args.get("name"), str) and not args.get("datei"):
+                from . import skill_laufzeit
+
+                self._skill_scope = (getattr(self, "_turn_no", None), args["name"],
+                                     skill_laufzeit.scope_for(args["name"], self.tools))
             content = output if isinstance(output, list) else schutz.protect_output(call.name, str(output))
             if verdict.warned and isinstance(content, str):
                 content = schutz.guard_message(verdict) + "\n" + content

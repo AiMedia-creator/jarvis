@@ -28,7 +28,14 @@ BERECHTIGUNGEN = {
     "lesen": "liest nur",
     "lokal": "ändert nur lokale Jarvis-Daten (keine Freigabe nötig)",
     "extern": "ändert Daten außerhalb von Jarvis – erst nach deiner Freigabe",
+    # Getrennte Rechte für Code-Arbeit. Keine eingebaute Fähigkeit nutzt sie; jede, die es täte, braucht Freigabe.
+    "code_ausfuehren": "führt fremden Code aus – nur nach deiner Freigabe",
+    "repo_schreiben": "ändert Dateien in einem Repository – nur auf separatem Branch, nach Freigabe",
+    "push": "überträgt Änderungen zu GitHub – nur auf separatem Branch, nach Freigabe",
+    "merge": "führt Branches zusammen – nie automatisch, nur nach Freigabe",
+    "veroeffentlichen": "macht etwas öffentlich – nur nach Freigabe",
 }
+FREIGABEPFLICHTIG = {"extern", "code_ausfuehren", "repo_schreiben", "push", "merge", "veroeffentlichen"}
 
 
 class Abgebrochen(Exception):
@@ -47,12 +54,26 @@ class Faehigkeit:
     abbrechbar: bool = True
     #: Sekunden, die ein Werkzeugaufruf auf das Ergebnis wartet; danach läuft der Job im Hintergrund weiter.
     warten: float = 15.0
+    #: Harte Obergrenze eines Laufs in Sekunden; danach wird er abgebrochen und als fehlgeschlagen markiert.
+    zeitlimit: float = 300.0
+    #: ausfuehrbar (Python-Code in Jarvis) | skill (Markdown-Anleitung als Auftrag) | cloud (Anthropic Agent Skill)
+    art: str = "ausfuehrbar"
+    #: Wenn gesetzt, ist die Fähigkeit derzeit nicht nutzbar (z. B. fehlende Anmeldung); Text erklärt warum.
+    sperre: Callable[[], str] | None = None
+
+    def gesperrt(self) -> str:
+        try:
+            return (self.sperre() or "") if self.sperre else ""
+        except Exception as exc:  # Prüfung selbst darf die Liste nicht sprengen
+            return f"Status nicht prüfbar: {type(exc).__name__}"
 
     def definition(self) -> dict:
         return {"name": self.name, "titel": self.titel, "beschreibung": self.beschreibung,
                 "eingabe": {"type": "object", "properties": self.eingabe, "required": list(self.pflicht)},
                 "berechtigung": self.berechtigung, "berechtigung_text": BERECHTIGUNGEN[self.berechtigung],
-                "abbrechbar": self.abbrechbar}
+                "abbrechbar": self.abbrechbar, "zeitlimit_s": int(self.zeitlimit), "art": self.art,
+                "version": "1", "herkunft": "jarvis (eingebaut)", "aktiviert": not self.gesperrt(),
+                "sperrgrund": self.gesperrt()}
 
 
 @dataclass
@@ -65,13 +86,15 @@ class Lauf:
     abbruch: threading.Event = field(default_factory=threading.Event)
     ergebnis: dict | None = None
     fehler: str | None = None
+    fortschritt_text: str = ""
 
     def pruefen(self) -> None:
         if self.abbruch.is_set():
             raise Abgebrochen()
 
     def fortschritt(self, text: str) -> None:
-        _publish(self, "fortschritt", text=text[:200])
+        self.fortschritt_text = text[:200]
+        _publish(self, "fortschritt", text=self.fortschritt_text)
 
 
 _registry: dict[str, Faehigkeit] = {}
@@ -83,8 +106,8 @@ _pool = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix=
 def register(cap: Faehigkeit) -> Faehigkeit:
     if cap.berechtigung not in BERECHTIGUNGEN:
         raise ValueError(f"unbekannte Berechtigung {cap.berechtigung}")
-    if cap.berechtigung == "extern" and "bestaetigt_vom_nutzer" not in cap.eingabe:
-        raise ValueError("Externe Fähigkeiten brauchen die Freigabe (Feld bestaetigt_vom_nutzer)")
+    if cap.berechtigung in FREIGABEPFLICHTIG and "bestaetigt_vom_nutzer" not in cap.eingabe:
+        raise ValueError("Freigabepflichtige Fähigkeiten brauchen das Feld bestaetigt_vom_nutzer (Vorlage + Freigabe)")
     with _lock:
         _registry[cap.name] = cap
     return cap
@@ -102,11 +125,14 @@ def definitions() -> list[dict]:
 
 def _public(lauf: Lauf) -> dict:
     job = lauf.job
+    cap = _registry.get(lauf.faehigkeit)
     return {"id": job["id"], "faehigkeit": lauf.faehigkeit, "quelle": lauf.quelle, "status": job["status"],
             "start": job["start"], "ende": job["ende"], "eingabe": {k: str(v)[:120] for k, v in lauf.args.items()},
             "ergebnis": lauf.ergebnis, "fehler": lauf.fehler or job.get("fehler"),
-            "abbrechbar": bool(_registry.get(lauf.faehigkeit, None) and _registry[lauf.faehigkeit].abbrechbar)
-            and job["status"] in ("RUNNING", "PLANNED")}
+            "fortschritt": lauf.fortschritt_text,
+            "schritte": [{"werkzeug": s.get("werkzeug"), "status": s.get("status")} for s in job.get("schritte", [])][-12:],
+            "abbrechbar": bool(cap and cap.abbrechbar) and job["status"] in ("RUNNING", "PLANNED"),
+            "wiederholbar": job["status"] in ("FAILED", "CANCELLED")}
 
 
 def _publish(lauf: Lauf, phase: str, **extra) -> None:
@@ -131,11 +157,15 @@ def start(name: str, args: dict, quelle: str | None = None) -> tuple[Lauf, concu
     cap = get(name)
     if cap is None:
         raise ToolFailure(f"Unbekannte Fähigkeit {name}")
-    if cap.berechtigung == "extern" and not (args or {}).get("bestaetigt_vom_nutzer"):
-        raise ToolFailure("Externe Fähigkeit ohne Freigabe: erst Vorlage erstellen und bestätigen lassen.")
+    # Freigabepflichtige Fähigkeiten erreichen start() nur über approvals.wrap (Vorlage + Freigabe, siehe tool()).
     given = {k: v for k, v in dict(args or {}).items() if v not in (None, "")}  # leere Felder = nicht genannt
     clean = Tool(cap.name, cap.beschreibung, cap.eingabe, lambda **_: "", list(cap.pflicht)).validate(given)
+    if cap.gesperrt():
+        raise ToolFailure(f"{cap.titel} ist derzeit nicht nutzbar: {cap.gesperrt()}")
     job = jobs.create(f"{cap.titel}: {next(iter(clean.values()), '')}", "faehigkeiten", "faehigkeit")
+    # Wiederaufnahme auch nach einem Neustart: Eingaben liegen mit dem Job in SQLite (persist.save_job).
+    job["wiederaufnahme"] = {"faehigkeit": cap.name, "args": {k: str(v)[:2000] if isinstance(v, str) else v
+                                                              for k, v in clean.items()}}
     step = jobs.add_step(job, cap.name, clean, cap.berechtigung)
     lauf = Lauf(job=job, faehigkeit=cap.name, args=clean, quelle=quelle or _source())
     with _lock:
@@ -144,6 +174,9 @@ def start(name: str, args: dict, quelle: str | None = None) -> tuple[Lauf, concu
             for old in sorted(_laeufe.values(), key=lambda x: x.job["start"])[:20]:
                 _laeufe.pop(old.job["id"], None)
     _publish(lauf, "gestartet")
+    watchdog = threading.Timer(cap.zeitlimit, lambda: cancel(job["id"], f"Zeitlimit von {int(cap.zeitlimit)} s überschritten"))
+    watchdog.daemon = True
+    watchdog.start()
 
     def run() -> dict | None:
         try:
@@ -151,15 +184,16 @@ def start(name: str, args: dict, quelle: str | None = None) -> tuple[Lauf, concu
             result = cap.ausfuehren(clean, lauf)
             lauf.pruefen()
             lauf.ergebnis = result
-            jobs.finish_step(step, jobs.COMPLETED, str(result.get("text", "")))
+            waiting = bool(result.get("wartet_auf_freigabe"))
+            jobs.finish_step(step, jobs.WAITING if waiting else jobs.COMPLETED, str(result.get("text", "")))
             jobs.set_result(job, str(result.get("text", "")))
-            jobs.finish(job, jobs.COMPLETED)
+            jobs.finish(job, jobs.COMPLETED)  # bleibt WAITING_FOR_APPROVAL, wenn ein Schritt auf Freigabe wartet
             _publish(lauf, "fertig")
             return result
         except Abgebrochen:
-            jobs.finish_step(step, jobs.CANCELLED)
+            jobs.finish_step(step, jobs.CANCELLED if job["status"] != jobs.FAILED else jobs.FAILED)
             jobs.finish(job, jobs.CANCELLED)
-            _publish(lauf, "abgebrochen")
+            _publish(lauf, "abgebrochen" if job["status"] == jobs.CANCELLED else "fehler")
             return None
         except Exception as exc:  # Fehler sichtbar machen, nie verschlucken
             lauf.fehler = str(exc)[:300] or type(exc).__name__
@@ -167,6 +201,8 @@ def start(name: str, args: dict, quelle: str | None = None) -> tuple[Lauf, concu
             jobs.finish(job, jobs.FAILED, lauf.fehler)
             _publish(lauf, "fehler")
             return None
+        finally:
+            watchdog.cancel()
 
     return lauf, _pool.submit(run)
 
@@ -189,6 +225,12 @@ def run_tool(name: str, args: dict) -> str:
     return str((lauf.ergebnis or {}).get("text") or "Erledigt.")
 
 
+def tools() -> list:
+    """Alle nutzbaren Fähigkeiten als Werkzeuge (gesperrte werden Claude gar nicht erst angeboten)."""
+    _ensure_builtin()
+    return [tool(name) for name, cap in list(_registry.items()) if not cap.gesperrt() and not name.startswith("test_")]
+
+
 def tool(name: str):
     """Fähigkeit als Werkzeug für Claude (Studio und Echtzeit)."""
     from .tools import Tool
@@ -200,19 +242,31 @@ def tool(name: str):
                 timeout=cap.warten + 5)
 
 
-def cancel(job_id: str) -> bool:
-    from . import jobs
+def cancel(job_id: str, grund: str | None = None) -> bool:
+    """Ausdrücklicher Abbruch (oder Zeitlimit, dann mit `grund` als Fehler)."""
+    from . import jobs, runtime
 
     with _lock:
         lauf = _laeufe.get(job_id)
     if lauf is None or lauf.job["status"] not in (jobs.RUNNING, jobs.PLANNED):
         return False
     cap = _registry.get(lauf.faehigkeit)
-    if cap is not None and not cap.abbrechbar:
+    if cap is not None and not cap.abbrechbar and grund is None:
         return False
     lauf.abbruch.set()
-    jobs.finish(lauf.job, jobs.CANCELLED)
-    _publish(lauf, "abgebrochen")
+    agent = runtime._job_agents.get(job_id)  # Skill-Aufträge: auch den Agenten dieses Jobs stoppen
+    if agent is not None:
+        try:
+            agent.cancel()
+        except Exception:
+            pass
+    if grund:
+        lauf.fehler = grund
+        jobs.finish(lauf.job, jobs.FAILED, grund)
+        _publish(lauf, "fehler")
+    else:
+        jobs.finish(lauf.job, jobs.CANCELLED)
+        _publish(lauf, "abgebrochen")
     return True
 
 
@@ -220,25 +274,48 @@ def retry(job_id: str) -> dict:
     """Wiederaufnahme: fehlgeschlagenen/abgebrochenen Lauf mit denselben Eingaben neu starten."""
     from .tools import ToolFailure
 
+    from . import jobs
+
     with _lock:
         lauf = _laeufe.get(job_id)
-    if lauf is None:
-        raise ToolFailure("Lauf nicht mehr im Speicher (z. B. nach Neustart) – bitte neu beauftragen.")
-    if lauf.job["status"] not in ("FAILED", "CANCELLED"):
+    job = lauf.job if lauf else jobs.get(job_id)  # nach Neustart: aus SQLite wiederhergestellter Job
+    saved = (job or {}).get("wiederaufnahme")
+    if job is None or not isinstance(saved, dict) or not saved.get("faehigkeit"):
+        raise ToolFailure("Für diesen Lauf sind keine Eingaben gespeichert – bitte neu beauftragen.")
+    if job["status"] not in ("FAILED", "CANCELLED"):
         raise ToolFailure("Nur fehlgeschlagene oder abgebrochene Läufe können wiederholt werden.")
-    new, _ = start(lauf.faehigkeit, lauf.args, lauf.quelle)
+    new, _ = start(saved["faehigkeit"], dict(saved.get("args") or {}), lauf.quelle if lauf else "wiederaufnahme")
     return _public(new)
 
 
 def recent(limit: int = 20) -> list[dict]:
+    """Letzte Läufe – auch aus früheren Jarvis-Starts (aus den gespeicherten Jobs, ohne Ergebnisdetails)."""
+    from . import jobs
+
     with _lock:
-        items = sorted(_laeufe.values(), key=lambda x: x.job["start"], reverse=True)[:limit]
-    return [_public(x) for x in items]
+        live = {x.job["id"]: _public(x) for x in _laeufe.values()}
+    for job in jobs.recent(50):
+        saved = job.get("wiederaufnahme")
+        if job["id"] in live or job.get("art") != "faehigkeit" or not isinstance(saved, dict):
+            continue
+        live[job["id"]] = {"id": job["id"], "faehigkeit": saved.get("faehigkeit"), "quelle": "früherer Start",
+                           "status": job["status"], "start": job["start"], "ende": job["ende"],
+                           "eingabe": {k: str(v)[:120] for k, v in (saved.get("args") or {}).items()},
+                           "ergebnis": {"text": job.get("ergebnis")} if job.get("ergebnis") else None,
+                           "fehler": job.get("fehler"), "fortschritt": "", "abbrechbar": False,
+                           "schritte": [{"werkzeug": s.get("werkzeug"), "status": s.get("status")} for s in job.get("schritte", [])][-12:],
+                           "wiederholbar": job["status"] in ("FAILED", "CANCELLED")}
+    return sorted(live.values(), key=lambda x: x["start"], reverse=True)[:limit]
 
 
 def is_run(job_id: str) -> bool:
     with _lock:
         return job_id in _laeufe
+
+
+def needs_approval(name: str) -> bool:
+    cap = get(name)
+    return bool(cap and cap.berechtigung in FREIGABEPFLICHTIG)
 
 
 # --- Eingebaute Fähigkeiten ----------------------------------------------------------------------------------
@@ -262,6 +339,70 @@ def _auftrag_erfassen(args: dict, lauf: Lauf) -> dict:
                     "Er steht jetzt unter Aufträge.",
             "auftrag_id": order["id"], "titel": order["titel"], "status": order["status"],
             "prioritaet": order["prioritaet"], "kunde": order.get("kunde", ""), "frist": order.get("frist", "")}
+
+
+def _skill_starten(args: dict, lauf: Lauf) -> dict:
+    """Führt eine Jarvis-Skill (Anleitung) als eigenen Auftrag aus: eigenes Gespräch, eigener Werkzeug-Rahmen."""
+    from . import jobs, runtime, skill_laufzeit, skills
+    from .tools import all_tools
+
+    name = args["skill"].strip()
+    skill = skills.load_all().get(name)
+    if skill is None:
+        raise ValueError(f"Unbekannte Skill '{name}'.")
+    if not skill_laufzeit.enabled(skill):
+        raise ValueError(f"Skill '{name}' ist deaktiviert. Erst im Command Center aktivieren.")
+    tools = {t.name: t for t in all_tools(skill_laufzeit.load_active(), None)}
+    definition = skill_laufzeit.define(skill, tools)
+    if definition.fehlende_werkzeuge and definition.rahmen == "deklariert" and not definition.werkzeuge:
+        raise ValueError(f"Keines der benötigten Werkzeuge ist verfügbar: {', '.join(definition.fehlende_werkzeuge)}.")
+    scope = None if definition.rahmen == "frei" else set(definition.werkzeuge) | skill_laufzeit.ALWAYS_ALLOWED
+    lauf.fortschritt(f"Skill {name} läuft als Auftrag (Rahmen: {definition.rahmen}).")
+    conv = "skill-" + lauf.job["id"]
+    text = (f"Skill-Auftrag. Lies zuerst die Skill '{name}' mit lies_skill und arbeite sie dann für diesen Auftrag ab. "
+            f"Nutze nur die Werkzeuge, die dir zur Verfügung stehen. Auftrag: {args['auftrag']}")
+    try:
+        job = runtime.run(conv, text, job=lauf.job, kind="skill", channel="hintergrund", tools=scope)
+    finally:
+        runtime.drop_conversation(conv)
+    lauf.pruefen()
+    if job["status"] == jobs.CANCELLED:
+        raise Abgebrochen()
+    if job["status"] == jobs.FAILED:
+        raise ValueError(job.get("fehler") or "Skill-Auftrag fehlgeschlagen.")
+    waiting = job["status"] == jobs.WAITING or any(s.get("status") == jobs.WAITING for s in job["schritte"])
+    return {"text": (job.get("ergebnis") or "Erledigt.")[:4000], "skill": name, "rahmen": definition.rahmen,
+            "wartet_auf_freigabe": waiting}
+
+
+def _github_suchen(args: dict, lauf: Lauf) -> dict:
+    from . import github_quelle
+
+    try:
+        hits = github_quelle.search(args["begriff"], int(args.get("anzahl") or 5))
+    except github_quelle.GitHubFehler as exc:
+        raise ValueError(str(exc)) from None
+    text = "\n".join(f"{h['repo']} ★{h['sterne']} {h['sprache']} {h['lizenz']} – {h['beschreibung']}" for h in hits)
+    return {"text": text or "Keine öffentlichen Repositories gefunden.", "treffer": hits}
+
+
+def _github_analysieren(args: dict, lauf: Lauf) -> dict:
+    from . import github_quelle
+
+    try:
+        origin = github_quelle.fetch(args["repo"], args.get("ref") or None, check=lauf.pruefen, progress=lauf.fortschritt)
+        lauf.pruefen()
+        lauf.fortschritt("Lese README, Struktur, Lizenz und Stack (nichts wird ausgeführt) …")
+        summary = github_quelle.summarize(origin)
+    except github_quelle.GitHubFehler as exc:
+        raise ValueError(str(exc)) from None
+    return {"text": github_quelle.text_for_claude(summary), "github": summary}
+
+
+def _cloud_dokument(args: dict, lauf: Lauf) -> dict:
+    from . import cloud_skills
+
+    return cloud_skills.run(args["skill"], args["auftrag"], check=lauf.pruefen, progress=lauf.fortschritt)
 
 
 _builtin_done = False
@@ -290,4 +431,42 @@ def _ensure_builtin() -> None:
         ausfuehren=_auftrag_erfassen,
         abbrechbar=True,
         warten=10.0,
+        zeitlimit=60.0,
+    ))
+    register(Faehigkeit(
+        name="skill_starten", titel="Skill als Auftrag ausführen", art="skill",
+        beschreibung="Führt eine Jarvis-Skill (aus dem Skill-Katalog) als eigenen Auftrag aus – unabhängig vom Gespräch, "
+                     "mit Fortschritt, Abbruch und Wiederaufnahme im Command Center. Für längere, mehrstufige Aufgaben. "
+                     "Die Skill darf nur ihre freigegebenen Werkzeuge nutzen; Außenwirksames landet als Vorlage zur Freigabe.",
+        eingabe={"skill": string("exakter Name der Skill aus dem Katalog"), "auftrag": string("was konkret erledigt werden soll")},
+        pflicht=["skill", "auftrag"], berechtigung="lokal", ausfuehren=_skill_starten,
+        warten=3.0, zeitlimit=900.0,
+    ))
+    register(Faehigkeit(
+        name="github_suchen", titel="GitHub durchsuchen",
+        beschreibung="Sucht öffentliche GitHub-Repositories (Name, Sterne, Sprache, Lizenz). Nur lesend, ohne Anmeldung.",
+        eingabe={"begriff": string("Suchbegriff"), "anzahl": {"type": "integer", "description": "1–10 Treffer (optional)"}},
+        pflicht=["begriff"], berechtigung="lesen", ausfuehren=_github_suchen, warten=20.0, zeitlimit=30.0,
+        sperre=lambda: "" if __import__("shutil").which("git") else "git ist nicht installiert.",
+    ))
+    register(Faehigkeit(
+        name="github_analysieren", titel="GitHub-Repository analysieren",
+        beschreibung="Lädt ein öffentliches (oder ausdrücklich freigegebenes privates) Repository in einen isolierten "
+                     "Arbeitsbereich, legt es auf einen Commit fest und fasst README, Struktur, Lizenz und Technologie-Stack "
+                     "zusammen. Führt keinen Code aus und installiert nichts; Inhalte des Repos sind fremde Daten.",
+        eingabe={"repo": string("owner/name, z. B. anthropics/skills"),
+                 "ref": string("Branch, Tag oder Commit (optional, Standard: Hauptbranch)")},
+        pflicht=["repo"], berechtigung="lokal", ausfuehren=_github_analysieren, warten=25.0, zeitlimit=420.0,
+        sperre=lambda: "" if __import__("shutil").which("git") else "git ist nicht installiert.",
+    ))
+    from . import cloud_skills
+
+    register(Faehigkeit(
+        name="cloud_dokument", titel="Dokument mit Anthropic-Skill erzeugen", art="cloud",
+        beschreibung="Erzeugt eine Datei (Word, PowerPoint, Excel, PDF) mit einer Anthropic Agent Skill in Anthropics "
+                     "Container – ohne Internet und ohne Zugriff auf Jarvis-Werkzeuge; alle Inhalte müssen im Auftrag stehen.",
+        eingabe={"skill": {"type": "string", "enum": sorted(cloud_skills.ANTHROPIC_SKILLS), "description": "docx, pptx, xlsx oder pdf"},
+                 "auftrag": string("vollständiger Inhalt und Aufbau der Datei")},
+        pflicht=["skill", "auftrag"], berechtigung="lokal", ausfuehren=_cloud_dokument, warten=5.0, zeitlimit=600.0,
+        sperre=cloud_skills.lock_reason,
     ))

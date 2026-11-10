@@ -11,7 +11,7 @@ import { Telemetry } from "../command/telemetry";
 import { LiveCamera, useBusEvents, type CameraInfo } from "../command/LiveCamera";
 import type { RealtimeSession } from "../command/realtime";
 import { DEFAULT_PREFS, type VoicePrefs } from "../command/SettingsDialog";
-import type { Capability, CapabilityRun, Settings } from "../command/api";
+import type { CapabilityRun, Platform, Settings } from "../command/api";
 import { Icon } from "../command/icons";
 import type { ContentView } from "../view/intent";
 import type { AudioEngine } from "../audio";
@@ -128,8 +128,7 @@ export default function CommandView({
   const canEdit = role === "owner";
   const [settings, setSettings] = useState<Settings | null>(null);
   const [camera, setCamera] = useState<CameraInfo | null>(null);
-  const [capabilities, setCapabilities] = useState<Capability[] | null>(null);
-  const [capRuns, setCapRuns] = useState<CapabilityRun[]>([]);
+  const [platform, setPlatform] = useState<Platform | null>(null);
   const [capError, setCapError] = useState<string | null>(null);
   const [capBusy, setCapBusy] = useState<string | null>(null);
   const alive = useRef(true);
@@ -200,8 +199,8 @@ export default function CommandView({
     try {
       const data = await api.capabilities();
       if (!alive.current) return;
-      setCapabilities(Array.isArray(data?.faehigkeiten) ? data.faehigkeiten : []);
-      setCapRuns(Array.isArray(data?.laeufe) ? data.laeufe : []);
+      if (!Array.isArray(data?.faehigkeiten)) throw new Error("Unerwartete Antwort");
+      setPlatform({ ...data, laeufe: data.laeufe ?? [], skills: data.skills ?? [] });
       setCapError(null);
     } catch (error) {
       if (alive.current) setCapError(error instanceof ApiError && error.status === 404
@@ -210,6 +209,18 @@ export default function CommandView({
     }
   }, []);
   useEffect(() => { void loadCapabilities(); }, [loadCapabilities]);
+  const startCapability = useCallback(async (name: string, args: Record<string, unknown>) => {
+    const result = await api.startCapability(name, args);
+    if (result?.lauf) setPlatform((old) => old && { ...old, laeufe: [result.lauf, ...old.laeufe.filter((r) => r.id !== result.lauf.id)] });
+  }, []);
+  const toggleSkill = useCallback(async (id: string, active: boolean) => {
+    try {
+      await api.setSkillActive(id, active);
+    } catch (error) {
+      setNotice(`Skill nicht umgeschaltet: ${error instanceof Error ? error.message : "unbekannt"}`);
+    }
+    void loadCapabilities();
+  }, [loadCapabilities]);
   const capabilityAction = useCallback(async (id: string, action: "abbrechen" | "wiederholen") => {
     setCapBusy(id);
     try {
@@ -227,7 +238,7 @@ export default function CommandView({
     if (ev.typ === "kamera") setCamera(ev.aktion === "schliessen" ? null : (ev.kamera ?? null));
     else if (ev.typ === "faehigkeit" && ev.lauf && typeof ev.lauf.id === "string") {
       const run = ev.lauf as CapabilityRun;
-      setCapRuns((old) => [run, ...old.filter((r) => r.id !== run.id)].sort((a, b) => b.start - a.start).slice(0, 20));
+      setPlatform((old) => old && { ...old, laeufe: [run, ...old.laeufe.filter((r) => r.id !== run.id)].sort((a, b) => b.start - a.start).slice(0, 25) });
       if (ev.phase === "fertig") void loadOrders(); // neuer Auftrag sofort im Kanban
     } else {
       window.clearTimeout(jobTimer.current);
@@ -508,8 +519,9 @@ export default function CommandView({
               automations={automations} approvals={approvals} onOpenApprovals={() => go("freigaben")}
               settings={settings} onSettings={setSettings} voiceMode={voiceMode} onStartRealtime={onStartRealtime}
               onStopRealtime={onStopRealtime} getRealtime={getRealtime} prefs={voicePrefs} onPrefs={onVoicePrefs} onReset={onReset}
-              capabilities={capabilities} capabilityRuns={capRuns} capabilityError={capError} capabilityBusy={capBusy}
-              onCapabilityAction={(id, action) => void capabilityAction(id, action)} onOpenOrder={openOrder} />
+              platform={platform} capabilityError={capError} capabilityBusy={capBusy}
+              onCapabilityAction={(id, action) => void capabilityAction(id, action)} onOpenOrder={openOrder}
+              onStartCapability={startCapability} onToggleSkill={(id, active) => void toggleSkill(id, active)} />
           )}
           {section === "freigaben" && <ApprovalsPanel items={approvals} canDecide={canEdit} onDecide={decide} query={search} />}
         </div>

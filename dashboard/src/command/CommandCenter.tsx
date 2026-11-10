@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { AudioEngine } from "../audio";
 import type { Role, Transcript } from "../types";
-import type { Approval, Automations, Capability, CapabilityRun, Settings } from "./api";
-import { CapabilityPanel } from "./CapabilityPanel";
+import type { Approval, Automations, Platform, Settings } from "./api";
+import { SkillPlatform } from "./SkillPlatform";
 import type { RealtimeSession } from "./realtime";
 import { SettingsDialog, type VoicePrefs } from "./SettingsDialog";
 import { MiniLevel, SignalBand, type BandMeter } from "./SignalBand";
@@ -110,9 +110,10 @@ export type CommandCenterProps = {
   prefs?: VoicePrefs;
   onPrefs?: (prefs: VoicePrefs) => void;
   onReset?: () => void;
-  capabilities?: Capability[] | null;
-  capabilityRuns?: CapabilityRun[];
+  platform?: Platform | null;
   capabilityError?: string | null;
+  onStartCapability?: (name: string, args: Record<string, unknown>) => Promise<void>;
+  onToggleSkill?: (id: string, active: boolean) => void;
   capabilityBusy?: string | null;
   onCapabilityAction?: (id: string, action: "abbrechen" | "wiederholen") => void;
   onOpenOrder?: (id: string) => void;
@@ -124,10 +125,11 @@ export function CommandCenter({
   automations, approvals, onOpenApprovals, settings = null, onSettings = () => undefined, voiceMode = "studio",
   onStartRealtime = async () => undefined, onStopRealtime = async () => undefined, getRealtime = () => null,
   prefs = { pause: 1.2, barge: "frei", talkMode: "frei" }, onPrefs = () => undefined, onReset = () => undefined,
-  capabilities = null, capabilityRuns = [], capabilityError = null, capabilityBusy = null,
+  platform = null, capabilityError = null, capabilityBusy = null,
   onCapabilityAction = () => undefined, onOpenOrder = () => undefined,
+  onStartCapability = async () => undefined, onToggleSkill = () => undefined,
 }: CommandCenterProps) {
-  const toolLabel = (name: string) => capabilities?.find((c) => c.name === name)?.titel ?? name;
+  const toolLabel = (name: string) => platform?.faehigkeiten.find((c) => c.name === name)?.titel ?? name;
   const realtimeMode = voiceMode === "echtzeit";
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
@@ -386,8 +388,9 @@ export function CommandCenter({
           </ol>
           )}
 
-          <CapabilityPanel capabilities={capabilities} runs={capabilityRuns} error={capabilityError} canEdit={owner}
-            busy={capabilityBusy} onAction={onCapabilityAction} onOpenOrder={onOpenOrder} />
+          <SkillPlatform platform={platform} error={capabilityError} canEdit={owner} busy={capabilityBusy}
+            onAction={onCapabilityAction} onOpenOrder={onOpenOrder} onStart={onStartCapability}
+            onToggleSkill={onToggleSkill} onOpenApprovals={onOpenApprovals} />
 
           <SignalBand source={bandSource} connected={connected} disconnectedAt={telemetry.disconnectedAt} reduced={reduced} redrawKey={version} />
 

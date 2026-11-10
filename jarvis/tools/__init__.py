@@ -112,6 +112,10 @@ def all_tools(skills_map, strategy_model: str | None = None) -> list[Tool]:
              # aus OpenJarvis uebernommen (nur lesend): Rechner, Wetter, Hacker News, GitHub, PDF, Apple Notizen, Obsidian
              *extras.tools(), *mac.tools(), research.tool(strategy_model),
              *live_kameras.tools()]  # Live-Kameras (Idee + Katalog aus World Monitor)
+    from .. import faehigkeiten
+
+    # Laufzeitfähigkeiten (Registry): GitHub, Skill-Aufträge, Cloud-Skills; auftrag_anlegen kommt über orders.tools().
+    tools.extend(t for t in faehigkeiten.tools() if t.name != "auftrag_anlegen")
     tools.extend(mcp_client.tools())  # Werkzeuge externer MCP-Server (~/.jarvis/mcp.json), Namen mit Praefix mcp_
     # Alles, was nach aussen wirkt, laeuft ueber Vorlage + Freigabe.
     return [approvals.wrap(t) if "bestaetigt_vom_nutzer" in t.properties else t for t in tools]

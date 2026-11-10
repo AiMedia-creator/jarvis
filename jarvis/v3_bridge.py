@@ -556,9 +556,59 @@ class Bridge:
             return web.json_response({"eintraege": await asyncio.to_thread(events.tail, 200)})
         raise web.HTTPNotFound(text="Unbekanntes Protokoll")
 
+    _tool_cache: tuple[float, dict] | None = None
+
+    def _registered_tools(self) -> dict:
+        """Registrierte Jarvis-Werkzeuge (kurz zwischengespeichert; MCP-Abfragen nicht bei jedem Aufruf)."""
+        from . import skill_laufzeit
+        from .tools import all_tools
+        cached = self._tool_cache
+        if cached and time.monotonic() - cached[0] < 60:
+            return cached[1]
+        tools = {t.name: t for t in all_tools(skill_laufzeit.load_active(), None)}
+        self._tool_cache = (time.monotonic(), tools)
+        return tools
+
+    def _platform(self) -> dict:
+        from . import cloud_skills, faehigkeiten, github_quelle, skill_laufzeit
+        return {"faehigkeiten": faehigkeiten.definitions(), "laeufe": faehigkeiten.recent(25),
+                "skills": skill_laufzeit.definitions(self._registered_tools()),
+                "berechtigungen": faehigkeiten.BERECHTIGUNGEN, "freigabepflichtig": sorted(faehigkeiten.FREIGABEPFLICHTIG),
+                "github": github_quelle.status(),
+                "cloud": {"erlaubt": cloud_skills.allowed(), "verfuegbar": sorted(cloud_skills.ANTHROPIC_SKILLS),
+                          "sperrgrund": cloud_skills.lock_reason(), "anbieter": "Claude API (api.anthropic.com)"}}
+
     async def faehigkeiten_list(self, request):
+        return web.json_response(await asyncio.to_thread(self._platform))
+
+    async def faehigkeit_starten(self, request):
         from . import faehigkeiten
-        return web.json_response({"faehigkeiten": faehigkeiten.definitions(), "laeufe": faehigkeiten.recent(20)})
+        from .tools import ToolFailure
+        data = await self.json_body(request)
+        name, args = str(data.get("name", "")), data.get("args")
+        if not isinstance(args, dict):
+            raise web.HTTPBadRequest(text="args muss ein Objekt sein")
+        if self.demo:
+            return web.json_response({"fehler": "Demo-Modus: keine Läufe."}, status=403)
+        if faehigkeiten.needs_approval(name):
+            return web.json_response({"fehler": "Diese Fähigkeit läuft nur über Vorlage und Freigabe im Gespräch."}, status=403)
+        try:
+            lauf, _ = await asyncio.to_thread(faehigkeiten.start, name, args, "dashboard")
+        except ToolFailure as exc:
+            return web.json_response({"fehler": str(exc)}, status=400)
+        return web.json_response({"lauf": faehigkeiten._public(lauf)})
+
+    async def skill_aktivieren(self, request):
+        from . import skill_laufzeit
+        data = await self.json_body(request)
+        if not isinstance(data.get("aktiv"), bool):
+            raise web.HTTPBadRequest(text="aktiv muss true/false sein")
+        try:
+            await asyncio.to_thread(skill_laufzeit.set_enabled, str(data.get("id", "")), data["aktiv"])
+        except ValueError as exc:
+            return web.json_response({"fehler": str(exc)}, status=400)
+        self._tool_cache = None
+        return web.json_response({"ok": True})
 
     async def faehigkeit_aktion(self, request):
         from . import faehigkeiten
@@ -866,7 +916,9 @@ def create_app(token: str | None = None, demo: bool | None = None) -> web.Applic
     app.router.add_get("/internal/logs/{art}", bridge.logs)
     app.router.add_get("/internal/events", bridge.events_poll)
     app.router.add_get("/internal/faehigkeiten", bridge.faehigkeiten_list)
+    app.router.add_post("/internal/faehigkeiten/starten", bridge.faehigkeit_starten)
     app.router.add_post("/internal/faehigkeiten/{id}/{aktion}", bridge.faehigkeit_aktion)
+    app.router.add_post("/internal/skills/aktivieren", bridge.skill_aktivieren)
     app.router.add_post("/internal/transcribe", bridge.transcribe)
     app.router.add_post("/internal/tts", bridge.synthesize)
     app.router.add_post("/internal/tts/stream", bridge.synthesize_stream)
