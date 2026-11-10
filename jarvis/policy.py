@@ -38,7 +38,7 @@ READ = {
     "obsidian_suchen", "obsidian_lesen", "tiefenrecherche", "mehr_faehigkeiten",
     "live_kamera", "kamera_schliessen",  # zeigen nur eine Ansicht in der Oberflaeche
     "github_suchen",  # oeffentliche Suche, nur lesend
-    "projekt_liste", "anruf_karte", "anruf_kennzahlen",  # Anruf-Copilot, nur lesend
+    "projekt_liste", "anruf_karte", "anruf_kennzahlen", "content_liste",  # Anruf-Copilot, nur lesend
 }
 # MCP-Werkzeuge, die in ~/.jarvis/mcp.json als "nur_lesen" markiert sind, meldet mcp_client hier an.
 MCP_READ: set[str] = set()

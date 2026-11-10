@@ -231,6 +231,19 @@ public final class ApiController {
         return forward("GET", "/internal/anrufe?tage=" + Math.max(1, Math.min(365, tage)), null);
     }
 
+    /** Content-Workflow: Einträge lesen; Status ab „Freigegeben“ nur mit Session, Origin und X-Jarvis. Keine Veröffentlichung. */
+    @GetMapping("/api/content")
+    public Mono<ResponseEntity<?>> content(ServerWebExchange exchange) {
+        if (!sessions.authorized(exchange)) return Mono.just(ResponseEntity.status(401).body(Map.of("fehler", "Session erforderlich.")));
+        return forward("GET", "/internal/content", null);
+    }
+
+    @PostMapping("/api/content/status")
+    public Mono<ResponseEntity<?>> contentStatus(@RequestBody Mono<Map<String, Object>> body, ServerWebExchange exchange) {
+        if (!writeAllowed(exchange)) return Mono.just(ResponseEntity.status(403).body(Map.of("fehler", "Session, Origin und X-Jarvis erforderlich.")));
+        return body.flatMap(value -> forward("POST", "/internal/content/status", value));
+    }
+
     /** Jarvis-Laufzeitfähigkeiten: Definitionen und letzte Läufe (Status, Ergebnis, Abbruch). */
     @GetMapping("/api/faehigkeiten")
     public Mono<ResponseEntity<?>> faehigkeiten(ServerWebExchange exchange) {

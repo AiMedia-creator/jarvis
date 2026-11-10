@@ -262,3 +262,16 @@ button.cc-row:hover { border-color: #B9CBE0; }
 .cc-call-res { margin-left: auto; font-size: 12px; font-weight: 600; color: #172B43; }
 .cc-call-next, .cc-call-note, .cc-call-meta { margin: 4px 0 0; font-size: 13px; }
 .cc-call-meta { font-size: 12px; color: #4a5a6b; }
+
+.cc-period { display: flex; gap: 6px; }
+.cc-period button { padding: 6px 12px; border: 1px solid #b8c4d2; border-radius: 6px; background: #fff; color: #172B43; cursor: pointer; }
+.cc-period button.on { background: #172B43; color: #fff; border-color: #172B43; }
+.cc-pipeline { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.cc-pipe-col { border: 1px solid #d6dde6; border-radius: 6px; padding: 10px; min-width: 0; }
+.cc-pipe-col h4 { margin: 0 0 6px; font-size: 13px; display: flex; justify-content: space-between; gap: 8px; }
+.cc-pipe-col ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 13px; }
+
+.cc-content-board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(210px, 1fr); gap: 12px; overflow-x: auto; padding-bottom: 8px; }
+.cc-content-cards { display: grid; gap: 8px; }
+.cc-content-detail { padding: 6px 4px; font-size: 13px; display: grid; gap: 4px; }
+.cc-content-detail p { margin: 0; }

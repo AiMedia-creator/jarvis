@@ -113,6 +113,13 @@ export type CallStats = {
   crm_offen: number; followups_faellig: number; mit_naechstem_schritt: number; mittlere_dauer_s: number | null; quelle: string; stand: string;
 };
 export type CallOverview = { projekte: CallProject[]; kennzahlen: CallStats; letzte_anrufe: CallRecord[]; ergebnisse: Record<string, string> };
+export type ContentHook = { text: string; belegt_durch?: string; klarheit?: number; relevanz?: number; neugier?: number; belegbarkeit?: number; summe?: number | null };
+export type ContentItem = {
+  id: string; version: number; status: string; titel: string; thema: string; ziel: string; zielgruppe: string; plattformen: string[];
+  hooks: ContentHook[]; skript: string; briefing: string; quellen: string[]; ki_hinweis: string; notiz: string;
+  ergebnisse: { plattform: string; erfasst: string; quelle: string; [k: string]: string | number }[];
+};
+export type ContentOverview = { spalten: { id: string; titel: string }[]; eintraege: ContentItem[]; plattformen: string[]; quelle: string };
 export type BusEvent = { seq: number; typ: string; [key: string]: any };
 /** Jarvis-Laufzeitfähigkeit (ausführbar, aus jarvis/faehigkeiten.py) – nicht zu verwechseln mit Markdown-Skills. */
 export type Capability = {
@@ -211,6 +218,8 @@ export const api = {
   events: (after: number, timeout: number, signal?: AbortSignal) =>
     fetch(`/api/events?after=${after}&timeout=${timeout}`, { credentials: "same-origin", signal })
       .then(async (r) => { if (!r.ok) throw new ApiError(r.status, `Ereignisse nicht erreichbar (${r.status})`); return r.json() as Promise<{ events: BusEvent[]; seq: number }>; }),
+  content: () => call<ContentOverview>("GET", "/api/content"),
+  setContentStatus: (id: string, status: string) => call<{ eintrag: ContentItem }>("POST", "/api/content/status", { id, status }),
   calls: (tage = 7) => call<CallOverview>("GET", `/api/anrufe?tage=${tage}`),
   capabilities: () => call<Platform>("GET", "/api/faehigkeiten"),
   startCapability: (name: string, args: Record<string, unknown>) =>

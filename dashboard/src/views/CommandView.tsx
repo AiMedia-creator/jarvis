@@ -3,6 +3,7 @@ import { api, ApiError, type Approval, type Automations, type CalendarData, type
 import { boardReducer, dayKey, initialBoard, matches, timeRange } from "../command/model";
 import { KanbanPanel } from "../command/KanbanPanel";
 import { CallsPanel } from "../command/CallsPanel";
+import { ContentPanel } from "../command/ContentPanel";
 import { ApprovalsPanel } from "../command/ApprovalsPanel";
 import { AgendaPanel } from "../command/AgendaPanel";
 import { AgentsPanel, AutomationsPanel, stateLabel } from "../command/AutomationPanels";
@@ -12,7 +13,7 @@ import { Telemetry } from "../command/telemetry";
 import { LiveCamera, useBusEvents, type CameraInfo } from "../command/LiveCamera";
 import type { RealtimeSession } from "../command/realtime";
 import { DEFAULT_PREFS, type VoicePrefs } from "../command/SettingsDialog";
-import type { CallOverview, CapabilityRun, Platform, Settings } from "../command/api";
+import type { CallOverview, ContentOverview, CapabilityRun, Platform, Settings } from "../command/api";
 import { Icon } from "../command/icons";
 import type { ContentView } from "../view/intent";
 import type { AudioEngine } from "../audio";
@@ -23,13 +24,14 @@ const CalendarPanel = lazy(() => import("../command/CalendarPanel"));
 const MapboxWorld = lazy(() => import("../world/MapboxWorld"));
 
 export type CommandSection =
-  | "uebersicht" | "auftraege" | "kalender" | "termin" | "anrufe" | "agenten" | "automatisierungen" | "welt" | "gespraech" | "freigaben";
+  | "uebersicht" | "auftraege" | "kalender" | "termin" | "anrufe" | "content" | "agenten" | "automatisierungen" | "welt" | "gespraech" | "freigaben";
 type NavItem = { id: CommandSection; label: string; icon: string };
 const SECTIONS: NavItem[] = [
   { id: "uebersicht", label: "Übersicht", icon: "overview" },
   { id: "auftraege", label: "Aufträge", icon: "orders" },
   { id: "kalender", label: "Kalender", icon: "calendar" },
   { id: "anrufe", label: "Anrufe", icon: "phone" },
+  { id: "content", label: "Content", icon: "news" },
   { id: "agenten", label: "Agenten", icon: "agents" },
   { id: "automatisierungen", label: "Automatisierungen", icon: "automation" },
   { id: "welt", label: "World View", icon: "world" },
@@ -37,7 +39,7 @@ const SECTIONS: NavItem[] = [
   { id: "freigaben", label: "Freigaben", icon: "approvals" },
 ];
 const TITLES: Record<CommandSection, string> = {
-  uebersicht: "Übersicht", auftraege: "Aufträge", kalender: "Kalender", termin: "Termin", anrufe: "Anrufe", agenten: "Agenten",
+  uebersicht: "Übersicht", auftraege: "Aufträge", kalender: "Kalender", termin: "Termin", anrufe: "Anrufe", content: "Content", agenten: "Agenten",
   automatisierungen: "Automatisierungen", welt: "World View", gespraech: "Command Center", freigaben: "Freigaben",
 };
 const MORE: { id: ContentView; label: string; icon: string }[] = [
@@ -56,7 +58,7 @@ const COLUMN_TITLES: Partial<Record<OrderStatus, string>> = { freigabe: "Prüfun
 const PRIO_ORDER = ["kritisch", "hoch", "normal", "niedrig"];
 
 const ALIASES: [RegExp, CommandSection][] = [
-  [/auftr|kanban|board/, "auftraege"], [/kalender|termin/, "kalender"], [/agenda/, "kalender"], [/anruf|telefon|vertrieb|lead/, "anrufe"], [/agent/, "agenten"],
+  [/auftr|kanban|board/, "auftraege"], [/kalender|termin/, "kalender"], [/agenda/, "kalender"], [/anruf|telefon|vertrieb|lead/, "anrufe"], [/content|video|hook|tiktok|reel|shorts/, "content"], [/agent/, "agenten"],
   [/automat|ablauf|abläuf|workflow|n8n/, "automatisierungen"], [/welt|karte|world|map/, "welt"],
   [/gespr|chat|coach|command center|sprach/, "gespraech"], [/freigab/, "freigaben"], [/übersicht|uebersicht|start|home/, "uebersicht"],
 ];
@@ -133,6 +135,8 @@ export default function CommandView({
   const [platform, setPlatform] = useState<Platform | null>(null);
   const [calls, setCalls] = useState<CallOverview | null>(null);
   const [callsError, setCallsError] = useState<string | null>(null);
+  const [contentData, setContentData] = useState<ContentOverview | null>(null);
+  const [contentError, setContentError] = useState<string | null>(null);
   const [capError, setCapError] = useState<string | null>(null);
   const [capBusy, setCapBusy] = useState<string | null>(null);
   const alive = useRef(true);
@@ -161,9 +165,10 @@ export default function CommandView({
       if (alive.current) setOffline(error instanceof ApiError ? error.message : "Jarvis-Server nicht erreichbar.");
     }
   }, []);
-  const loadCalls = useCallback(async () => {
+  const [callDays, setCallDays] = useState(7);
+  const loadCalls = useCallback(async (days = callDays) => {
     try {
-      const data = await api.calls(7);
+      const data = await api.calls(days);
       if (!alive.current) return;
       if (!data || !Array.isArray(data.projekte) || !data.kennzahlen) throw new Error("Unerwartete Antwort vom Anruf-Speicher.");
       setCalls(data);
@@ -171,8 +176,24 @@ export default function CommandView({
     } catch (error) {
       if (alive.current) setCallsError(error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Anrufe nicht erreichbar.");
     }
+  }, [callDays]);
+  useEffect(() => { if (section === "anrufe" || section === "uebersicht") void loadCalls(); }, [section, loadCalls]);
+  const loadContent = useCallback(async () => {
+    try {
+      const data = await api.content();
+      if (!alive.current) return;
+      if (!data || !Array.isArray(data.eintraege) || !Array.isArray(data.spalten)) throw new Error("Unerwartete Antwort vom Content-Speicher.");
+      setContentData(data);
+      setContentError(null);
+    } catch (error) {
+      if (alive.current) setContentError(error instanceof Error ? error.message : "Content nicht erreichbar.");
+    }
   }, []);
-  useEffect(() => { if (section === "anrufe") void loadCalls(); }, [section, loadCalls]);
+  useEffect(() => { if (section === "content") void loadContent(); }, [section, loadContent]);
+  const moveContent = useCallback(async (id: string, status: string) => {
+    try { await api.setContentStatus(id, status); await loadContent(); }
+    catch (error) { if (alive.current) setNotice(error instanceof Error ? error.message : "Status nicht geändert."); }
+  }, [loadContent]);
   const loadApprovals = useCallback(async () => {
     try {
       const data = await api.approvals();
@@ -345,6 +366,10 @@ export default function CommandView({
   const focus: { tone: "attn" | "warn"; text: string; action: string; to: CommandSection }[] = [];
   if (openApprovals.length) focus.push({ tone: "attn", text: `${openApprovals.length} ${openApprovals.length === 1 ? "Freigabe wartet" : "Freigaben warten"} auf deine Entscheidung.`, action: "Prüfen", to: "freigaben" });
   if (overdue.length) focus.push({ tone: "warn", text: `${overdue.length} ${overdue.length === 1 ? "Auftrag ist" : "Aufträge sind"} überfällig: ${overdue.slice(0, 2).map((o) => o.titel).join(", ")}${overdue.length > 2 ? " …" : ""}`, action: "Aufträge", to: "auftraege" });
+  if (calls && calls.kennzahlen.followups_faellig > 0)
+    focus.push({ tone: "attn", text: `${calls.kennzahlen.followups_faellig} Follow-up${calls.kennzahlen.followups_faellig === 1 ? " ist" : "s sind"} nach Anrufen fällig – nächste Umsatzaktion.`, action: "Anrufe", to: "anrufe" });
+  if (calls && calls.kennzahlen.crm_offen > 0)
+    focus.push({ tone: "warn", text: `${calls.kennzahlen.crm_offen} Anruf${calls.kennzahlen.crm_offen === 1 ? "" : "e"} ohne CRM-Eintrag.`, action: "Anrufe", to: "anrufe" });
   if (stats.konflikte) focus.push({ tone: "warn", text: `${stats.konflikte} Terminüberschneidung${stats.konflikte === 1 ? "" : "en"} im Kalender.`, action: "Kalender", to: "kalender" });
   if (calendar && !calendarOk && calendar.status !== "demo")
     focus.push({ tone: "warn", text: `Kalender nicht verfügbar: ${calendar.hinweis || "unbekannter Grund"}`, action: "Details", to: "kalender" });
@@ -516,7 +541,14 @@ export default function CommandView({
             <>
               <div className="cc-page-head"><div><h2>Anrufe</h2><p>Gemessene Zahlen aus den von Jarvis erfassten Gesprächen. Nichts wird ohne Freigabe ins CRM geschrieben.</p></div>
                 <button type="button" className="cc-link" onClick={() => void loadCalls()}>Aktualisieren</button></div>
-              <CallsPanel data={calls} error={callsError} canAsk={canEdit} onAsk={ask} />
+              <CallsPanel data={calls} error={callsError} canAsk={canEdit} onAsk={ask} days={callDays} onDays={(d) => { setCallDays(d); void loadCalls(d); }} />
+            </>
+          )}
+          {section === "content" && (
+            <>
+              <div className="cc-page-head"><div><h2>Content</h2><p>Von der Idee bis zur Auswertung. Nichts wird automatisch veröffentlicht.</p></div>
+                <button type="button" className="cc-link" onClick={() => void loadContent()}>Aktualisieren</button></div>
+              <ContentPanel data={contentData} error={contentError} canEdit={canEdit} onMove={moveContent} onAsk={ask} />
             </>
           )}
           {section === "agenten" && (

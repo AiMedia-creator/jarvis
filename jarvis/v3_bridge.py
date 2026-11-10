@@ -587,6 +587,22 @@ class Bridge:
             tage = 7
         return web.json_response(await asyncio.to_thread(anrufe.uebersicht, tage))
 
+    async def content_uebersicht(self, request):
+        from . import content
+        return web.json_response(await asyncio.to_thread(content.uebersicht))
+
+    async def content_status(self, request):
+        """Nur der Nutzer (Dashboard mit Session, Origin und X-Jarvis) setzt Status ab „Freigegeben“. Keine Veröffentlichung."""
+        from . import content
+        data = await self.json_body(request)
+        if self.demo:
+            return web.json_response({"fehler": "Demo-Modus: keine Änderungen."}, status=403)
+        try:
+            item = await asyncio.to_thread(content.status_setzen, str(data.get("id", "")), str(data.get("status", "")), "nutzer")
+        except content.ContentError as exc:
+            return web.json_response({"fehler": str(exc)}, status=400)
+        return web.json_response({"eintrag": item})
+
     async def faehigkeiten_list(self, request):
         return web.json_response(await asyncio.to_thread(self._platform))
 
@@ -925,6 +941,8 @@ def create_app(token: str | None = None, demo: bool | None = None) -> web.Applic
     app.router.add_get("/internal/logs/{art}", bridge.logs)
     app.router.add_get("/internal/events", bridge.events_poll)
     app.router.add_get("/internal/anrufe", bridge.anrufe_uebersicht)
+    app.router.add_get("/internal/content", bridge.content_uebersicht)
+    app.router.add_post("/internal/content/status", bridge.content_status)
     app.router.add_get("/internal/faehigkeiten", bridge.faehigkeiten_list)
     app.router.add_post("/internal/faehigkeiten/starten", bridge.faehigkeit_starten)
     app.router.add_post("/internal/faehigkeiten/{id}/{aktion}", bridge.faehigkeit_aktion)

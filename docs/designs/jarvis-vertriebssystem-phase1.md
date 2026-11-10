@@ -281,3 +281,22 @@ Freigabe: „Design freigegeben – weiter mit Phase 2.“ Geprüft wurde per Ty
 **Stimm-Abbruch (R51), Befund:** Im Protokoll vom 10.11. steht `ElevenLabs lehnt den Schluessel ab (401) … Berechtigung 'ElevenLabs Agents' erlauben`. Der Echtzeit-Agent wird nur beim Vorbereiten einer Sitzung neu konfiguriert (`prepare_session`, setzt `max_duration_seconds` auf 60 Min). Schlägt das fehl, bleibt beim Anbieter die alte Höchstdauer (Standard 600 s) bestehen. Das passt zu einem Abbruch nach etwa 10 Minuten, ist aber **nicht bewiesen**. Zusätzlich meldet der Java-Server alle 2 Minuten ein `ReadTimeout` zur Python-Brücke, dessen Ursache ich nicht zugeordnet habe. **Dein Schritt:** einen neuen ElevenLabs-Schlüssel mit der Berechtigung „ElevenLabs Agents“ anlegen und eintragen. Danach prüfe ich den Abbruch erneut.
 
 **Nicht in Stufe 1 umgesetzt (bewusst):** Tiefenrecherche-Verknüpfung, Einwand-Rollenspiel, Pipeline-Ansicht, Gedächtnis-Center-Ergänzungen, Claude-Brücke, Content-Workflow, Karte, n8n, GoHighLevel/Close-Adapter.
+
+## Phase 2 – Umsetzungsstand Stufe 2/3 (10.11.2026, zweiter Durchgang)
+
+Geprüft wie oben (Typprüfung, Builds, temporäre Datenbank, Sicht im Browser, kein Testlauf, keine echten Konten, keine Veröffentlichung).
+
+| ID | Neuer Status | Beleg / Hinweis |
+|---|---|---|
+| R06 | umgesetzt (als Skill) | `jarvis/skills/einwand-rollenspiel.md`; Markdown-Anleitung, nicht live mit Stimme geprüft |
+| R10 | teilweise | Bereich „Anrufe“: Pipeline-Spalten und „Nächste Umsatzaktion“ aus erfassten Anrufen; keine CRM-Pipeline |
+| R39 | teilweise | Übersicht zeigt fällige Follow-ups und Anrufe ohne CRM-Eintrag, sobald Anrufe erfasst sind |
+| R13–R16, R18–R21 | teilweise (Skill) | `jarvis/skills/content-hooks.md`: Hooks mit Bewertung 1–5 je Kriterium, Skript, Plattformvarianten. Qualität hängt vom Modell; keine Messung |
+| R23, R24, R43 | umgesetzt (lokal) | `jarvis/content.py`, Fähigkeiten `content_*`, Bereich „Content“ mit 9 Status-Spalten; Kennzahlen nur manuell erfasst, mit Quelle „vom Nutzer genannt“ |
+| R25 | umgesetzt | Jarvis setzt höchstens „Review“; ab „Freigegeben“ nur der Nutzer im Dashboard. Es gibt keinen Veröffentlichungsweg |
+| R26, R27 | offen | Instagram-/YouTube-API und Regeln zu KI-Inhalten nicht recherchiert; TikTok: ungeprüfte Apps nur privat (Drittquellen) |
+| R37, R38 | teilweise | `jarvis/mcp_server.py`: lesender stdio-Server mit Zugriffsprotokoll (mit Testanfragen geprüft, nicht in Claude Code registriert). Claude.ai Web nicht anbindbar (nur Remote-Server) |
+| R51 | Befund erweitert | Das `ReadTimeout` im Java-Log gehört sehr wahrscheinlich zum Kalender-Abruf alle 120 s (`CommandView.tsx`): Der Kalender liefert wegen der abgelaufenen Google-Verbindung 502. Zusammenhang mit dem Stimm-Abbruch nicht belegt |
+| R30, R31, R35, R36, R42, R57–R59, R66, R67 | nicht umgesetzt | Status je Äußerung, Roh-Audio-Regel, Gedächtnis-Center-Ergänzungen, Lernen, CRM-Pipeline, browser-use-Prüfung, n8n, Karte, Satellit |
+
+Aufgabenliste für Omar: `docs/EINRICHTUNG.md`.

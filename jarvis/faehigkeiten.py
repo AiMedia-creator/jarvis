@@ -478,6 +478,47 @@ def _anruf_crm_status(args: dict, lauf: Lauf) -> dict:
     return {"text": f"CRM-Status von {call['id']}: {call['crm_status']}.", "anruf": call}
 
 
+def _content_speichern(args: dict, lauf: Lauf) -> dict:
+    from . import content
+
+    lauf.pruefen()
+    felder = {k: v for k, v in args.items() if k != "content_id" and v not in (None, "")}
+    try:
+        item = content.speichern(felder, args.get("content_id") or None)
+    except content.ContentError as exc:
+        raise ValueError(str(exc)) from exc
+    return {"text": f"Content {item['id']} gespeichert (Status {item['status']}): {item['titel']}.", "eintrag": item}
+
+
+def _content_liste(args: dict, lauf: Lauf) -> dict:
+    from . import content
+
+    items = content.liste(args.get("status") or None, 30)
+    text = "; ".join(f"{i['id']} [{i['status']}] {i['titel']}" for i in items) or "Noch kein Content-Eintrag."
+    return {"text": text, "eintraege": items}
+
+
+def _content_status(args: dict, lauf: Lauf) -> dict:
+    from . import content
+
+    try:
+        item = content.status_setzen(args["content_id"], args["status"], "jarvis")
+    except content.ContentError as exc:
+        raise ValueError(str(exc)) from exc
+    return {"text": f"Content {item['id']} steht jetzt auf {item['status']}.", "eintrag": item}
+
+
+def _content_ergebnis(args: dict, lauf: Lauf) -> dict:
+    from . import content
+
+    werte = {k: v for k, v in args.items() if k not in ("content_id", "plattform")}
+    try:
+        item = content.ergebnis_erfassen(args["content_id"], args["plattform"], werte)
+    except content.ContentError as exc:
+        raise ValueError(str(exc)) from exc
+    return {"text": f"Kennzahlen zu {item['id']} ({args['plattform']}) gespeichert – Quelle: vom Nutzer genannt.", "eintrag": item}
+
+
 _builtin_done = False
 
 
@@ -577,6 +618,38 @@ def _ensure_builtin() -> None:
         eingabe={"anruf_id": string("ID des Anrufs, z. B. C-1a2b3c4d5e"),
                  "status": {"type": "string", "enum": ["offen", "vorschau", "geschrieben", "nicht_noetig"], "description": "CRM-Status"}},
         pflicht=["anruf_id", "status"], berechtigung="lokal", ausfuehren=_anruf_crm_status, warten=10.0, zeitlimit=30.0))
+    register(Faehigkeit(
+        name="content_speichern", titel="Content-Eintrag speichern",
+        beschreibung="Legt einen Content-Eintrag an oder ergänzt ihn (Titel, Thema, Ziel, Zielgruppe, Plattformen, Hooks mit "
+                     "Bewertung 1–5 für klarheit/relevanz/neugier/belegbarkeit, Skript, Quellen, KI-Hinweis). Nur lokal. "
+                     "Keine erfundenen Zahlen oder Fakten; Aussagen mit Quelle belegen. Veröffentlicht nichts.",
+        eingabe={"content_id": string("ID zum Ändern (leer = neuer Eintrag)"), "titel": string("Titel"), "thema": string("Thema"),
+                 "ziel": string("Ziel des Videos"), "zielgruppe": string("Zielgruppe"),
+                 "plattformen": string("kommagetrennt: tiktok, instagram, youtube_shorts, youtube"),
+                 "hooks": {"type": "array", "items": {"type": "object"}, "description": "Hooks: [{text, klarheit, relevanz, neugier, belegbarkeit, belegt_durch}]"},
+                 "skript": string("Skript"), "briefing": string("Briefing/Recherche"), "quellen": string("Quellen, eine je Zeile"),
+                 "ki_hinweis": string("Hinweis zu KI-generierten Teilen/Kennzeichnung"), "notiz": string("Notiz")},
+        pflicht=[], berechtigung="lokal", ausfuehren=_content_speichern, warten=10.0, zeitlimit=60.0))
+    register(Faehigkeit(
+        name="content_liste", titel="Content anzeigen", beschreibung="Zeigt die Content-Einträge (optional nach Status). Nur lesend.",
+        eingabe={"status": {"type": "string", "enum": ["idee", "recherche", "skript", "produktion", "review", "freigegeben", "geplant", "veroeffentlicht", "auswertung"], "description": "Filter (optional)"}},
+        pflicht=[], berechtigung="lesen", ausfuehren=_content_liste, warten=10.0, zeitlimit=30.0))
+    register(Faehigkeit(
+        name="content_status_setzen", titel="Content-Status setzen (bis Review)",
+        beschreibung="Setzt den Status eines Content-Eintrags höchstens bis „review“. Ab „freigegeben“ entscheidet nur der Nutzer im Dashboard.",
+        eingabe={"content_id": string("ID, z. B. K-1a2b3c4d"),
+                 "status": {"type": "string", "enum": ["idee", "recherche", "skript", "produktion", "review"], "description": "Neuer Status"}},
+        pflicht=["content_id", "status"], berechtigung="lokal", ausfuehren=_content_status, warten=10.0, zeitlimit=30.0))
+    register(Faehigkeit(
+        name="content_ergebnis_erfassen", titel="Content-Kennzahlen erfassen",
+        beschreibung="Speichert Kennzahlen, die der Nutzer nennt (Wiedergabezeit, Abschlussrate, Views, Klicks, Kommentare, Follower, "
+                     "Leads, Umsatz) zu einem Beitrag. Nur genannte Werte, nichts schätzen oder erfinden.",
+        eingabe={"content_id": string("ID"), "plattform": {"type": "string", "enum": ["tiktok", "instagram", "youtube_shorts", "youtube"], "description": "Plattform"},
+                 "wiedergabezeit_s": {"type": "integer", "description": "Ø Wiedergabezeit in Sekunden"}, "abschlussrate_pct": {"type": "integer", "description": "Abschlussrate in %"},
+                 "views": {"type": "integer", "description": "Aufrufe"}, "klicks": {"type": "integer", "description": "Klicks"},
+                 "kommentare": {"type": "integer", "description": "Kommentare"}, "follower": {"type": "integer", "description": "neue Follower"},
+                 "leads": {"type": "integer", "description": "Leads"}, "umsatz_eur": {"type": "integer", "description": "Umsatz in Euro"}},
+        pflicht=["content_id", "plattform"], berechtigung="lokal", ausfuehren=_content_ergebnis, warten=10.0, zeitlimit=30.0))
     from . import cloud_skills
 
     register(Faehigkeit(

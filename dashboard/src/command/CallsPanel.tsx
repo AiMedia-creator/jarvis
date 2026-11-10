@@ -24,13 +24,26 @@ function Row({ call, results, project }: { call: CallRecord; results: Record<str
 }
 
 /** Anruf-Copilot: gemessene Zahlen und letzte Anrufe. Nur lesend; erfasst wird per Sprache oder Text über Jarvis. */
-export function CallsPanel({ data, error, onAsk, canAsk }: { data: CallOverview | null; error: string | null; onAsk: (text: string) => void; canAsk: boolean }) {
+export function CallsPanel({ data, error, onAsk, canAsk, days, onDays }: { data: CallOverview | null; error: string | null; onAsk: (text: string) => void; canAsk: boolean; days: number; onDays: (d: number) => void }) {
   if (error) return <p className="cc-warn-text">{error}</p>;
   if (!data) return <p className="cc-empty">Wird geladen …</p>;
   const k = data.kennzahlen;
   const names = new Map(data.projekte.map((p) => [p.id, p.name]));
+  const today = new Date().toISOString().slice(0, 10);
+  const stages: { id: string; label: string; match: (c: CallRecord) => boolean }[] = [
+    { id: "offen", label: "Follow-up offen", match: (c) => !!c.naechster_schritt && c.ergebnis !== "termin" && c.ergebnis !== "abschluss" },
+    { id: "termin", label: "Termin", match: (c) => c.ergebnis === "termin" },
+    { id: "abschluss", label: "Abschluss", match: (c) => c.ergebnis === "abschluss" },
+    { id: "ruhend", label: "Kein Interesse / nicht erreicht", match: (c) => ["kein_interesse", "nicht_erreicht", "falsche_nummer"].includes(c.ergebnis) },
+  ];
+  const due = data.letzte_anrufe.filter((c) => c.naechster_schritt && c.frist && c.frist <= today);
   return (
     <div className="cc-calls">
+      <div className="cc-period" role="group" aria-label="Zeitraum">
+        {[7, 30, 90].map((d) => (
+          <button key={d} type="button" className={days === d ? "on" : ""} aria-pressed={days === d} onClick={() => onDays(d)}>{d} Tage</button>
+        ))}
+      </div>
       <ul className="cc-kpis" aria-label={`Kennzahlen der letzten ${k.zeitraum_tage} Tage`}>
         <li><strong>{k.gespraeche}</strong><span>Gespräche</span></li>
         <li><strong>{k.termine}</strong><span>Termine</span></li>
@@ -39,6 +52,31 @@ export function CallsPanel({ data, error, onAsk, canAsk }: { data: CallOverview 
         <li><strong>{k.followups_faellig}</strong><span>Follow-ups fällig</span></li>
       </ul>
       <p className="cc-source">Quelle: {k.quelle}. Stand {new Date(k.stand).toLocaleString("de-DE")}. Zeitraum {k.zeitraum_tage} Tage.</p>
+      <section className="cc-card-box" aria-label="Nächste Umsatzaktion">
+        <header><h3>Nächste Umsatzaktion</h3></header>
+        {due.length === 0 ? <p className="cc-empty">Keine fälligen Follow-ups in den erfassten Anrufen.</p> : (
+          <ul className="cc-call-list">
+            {due.slice(0, 5).map((c) => (
+              <li key={c.id} className="cc-call"><strong>{c.naechster_schritt}</strong><span> · {c.firma || c.lead_name} (bis {c.frist})</span></li>
+            ))}
+          </ul>
+        )}
+      </section>
+      <section className="cc-card-box" aria-label="Pipeline">
+        <header><h3>Pipeline</h3></header>
+        <div className="cc-pipeline">
+          {stages.map((st) => {
+            const items = data.letzte_anrufe.filter(st.match);
+            return (
+              <div key={st.id} className="cc-pipe-col">
+                <h4>{st.label} <span className="mono">{items.length}</span></h4>
+                <ul>{items.slice(0, 8).map((c) => <li key={c.id}>{c.firma || c.lead_name}{c.naechster_schritt ? ` – ${c.naechster_schritt}` : ""}</li>)}</ul>
+              </div>
+            );
+          })}
+        </div>
+        <p className="cc-source">Aus den zuletzt erfassten Anrufen (höchstens 30 angezeigt); keine CRM-Daten.</p>
+      </section>
       <section className="cc-card-box">
         <header><h3>Projekte</h3></header>
         {data.projekte.length === 0 ? (
