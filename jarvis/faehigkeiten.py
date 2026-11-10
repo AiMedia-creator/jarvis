@@ -632,13 +632,13 @@ def _ensure_builtin() -> None:
         pflicht=[], berechtigung="lokal", ausfuehren=_content_speichern, warten=10.0, zeitlimit=60.0))
     register(Faehigkeit(
         name="content_liste", titel="Content anzeigen", beschreibung="Zeigt die Content-Einträge (optional nach Status). Nur lesend.",
-        eingabe={"status": {"type": "string", "enum": ["idee", "recherche", "skript", "produktion", "review", "freigegeben", "geplant", "veroeffentlicht", "auswertung"], "description": "Filter (optional)"}},
+        eingabe={"status": {"type": "string", "enum": ["idee", "recherche", "hooks", "skript", "produktion", "review", "freigegeben", "geplant", "veroeffentlicht", "auswertung"], "description": "Filter (optional)"}},
         pflicht=[], berechtigung="lesen", ausfuehren=_content_liste, warten=10.0, zeitlimit=30.0))
     register(Faehigkeit(
         name="content_status_setzen", titel="Content-Status setzen (bis Review)",
         beschreibung="Setzt den Status eines Content-Eintrags höchstens bis „review“. Ab „freigegeben“ entscheidet nur der Nutzer im Dashboard.",
         eingabe={"content_id": string("ID, z. B. K-1a2b3c4d"),
-                 "status": {"type": "string", "enum": ["idee", "recherche", "skript", "produktion", "review"], "description": "Neuer Status"}},
+                 "status": {"type": "string", "enum": ["idee", "recherche", "hooks", "skript", "produktion", "review"], "description": "Neuer Status"}},
         pflicht=["content_id", "status"], berechtigung="lokal", ausfuehren=_content_status, warten=10.0, zeitlimit=30.0))
     register(Faehigkeit(
         name="content_ergebnis_erfassen", titel="Content-Kennzahlen erfassen",

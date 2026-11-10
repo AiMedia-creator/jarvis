@@ -293,3 +293,13 @@
   .cc-sp-head { flex-wrap: wrap; }
   .cc-sp-tabs { margin-left: 0; }
 }
+
+/* Niedrige Fenster: Messbereich scrollt, Mikrofon und Eingabe bleiben immer erreichbar. */
+.cc-transport { position: sticky; bottom: 0; z-index: 5; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+.cc-tbtn { min-height: 40px; }
+@media (max-height: 760px) {
+  .cc .cc-work.flush { overflow: auto; }
+  .cc .cc-work.flush > .cc-center { height: auto; min-height: 100%; align-self: flex-start; grid-template-rows: auto auto auto auto auto; }
+  .cc .cc-center-grid { overflow: visible; }
+  .cc .cc-center-main, .cc .cc-center-side { overflow: visible; min-height: auto; }
+}

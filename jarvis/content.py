@@ -15,7 +15,7 @@ import uuid
 
 from . import persist
 
-STATUS = [("idee", "Idee"), ("recherche", "Recherche/Briefing"), ("skript", "Skript"), ("produktion", "Produktion"),
+STATUS = [("idee", "Idee"), ("recherche", "Recherche/Briefing"), ("hooks", "Hooks"), ("skript", "Skript"), ("produktion", "Produktion"),
           ("review", "Review"), ("freigegeben", "Freigegeben"), ("geplant", "Geplant"),
           ("veroeffentlicht", "Veröffentlicht"), ("auswertung", "Auswertung")]
 IDS = [s[0] for s in STATUS]

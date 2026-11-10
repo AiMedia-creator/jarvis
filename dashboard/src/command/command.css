@@ -275,3 +275,9 @@ button.cc-row:hover { border-color: #B9CBE0; }
 .cc-content-cards { display: grid; gap: 8px; }
 .cc-content-detail { padding: 6px 4px; font-size: 13px; display: grid; gap: 4px; }
 .cc-content-detail p { margin: 0; }
+
+.cc-next { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 18px; margin-bottom: 14px; border-radius: 12px; background: linear-gradient(135deg, #172B43, #2A4F7C); color: #fff; }
+.cc-next h3 { margin: 2px 0 4px; font-size: 18px; color: #fff; }
+.cc-next p { margin: 0; font-size: 13px; opacity: .85; max-width: 62ch; }
+.cc-next-label { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; opacity: .7; }
+@media (max-width: 640px) { .cc-next { flex-direction: column; align-items: stretch; } }

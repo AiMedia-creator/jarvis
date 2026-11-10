@@ -375,6 +375,19 @@ export default function CommandView({
     focus.push({ tone: "warn", text: `Kalender nicht verfügbar: ${calendar.hinweis || "unbekannter Grund"}`, action: "Details", to: "kalender" });
   for (const w of troubled) focus.push({ tone: "warn", text: `Ablauf „${w.name}“: letzter Lauf ${stateLabel(w.letzter_lauf!.status).toLowerCase()}${w.letzter_lauf!.fehler ? ` (${w.letzter_lauf!.fehler})` : ""}.`, action: "Ansehen", to: "automatisierungen" });
 
+  const dueCall = calls?.letzte_anrufe.filter((c) => c.naechster_schritt && c.frist && c.frist <= today)
+    .sort((a, b) => (a.frist ?? "").localeCompare(b.frist ?? ""))[0];
+  const nextSale: { title: string; reason: string; action: string; to: CommandSection } = dueCall
+    ? { title: dueCall.naechster_schritt, reason: `Fällig seit ${dueCall.frist} – ${dueCall.firma || dueCall.lead_name}, letztes Ergebnis: ${calls?.ergebnisse[dueCall.ergebnis] ?? dueCall.ergebnis}.`, action: "Zu den Anrufen", to: "anrufe" }
+    : calls && calls.kennzahlen.gespraeche === 0
+      ? { title: "Erstes Gespräch dokumentieren", reason: "Noch kein Anruf erfasst. Nach dem nächsten Gespräch kurz diktieren: Firma, Ergebnis, nächster Schritt – daraus entstehen Pipeline und Follow-ups.", action: "Anrufe öffnen", to: "anrufe" }
+      : { title: "Neue Gespräche anstoßen", reason: "Keine Follow-ups fällig. Die Pipeline braucht neue Kontakte – Anruf oder Nachricht an den nächsten Lead.", action: "Anrufe öffnen", to: "anrufe" };
+  const services = [
+    { name: "Kalender / Google", ok: calendarOk, text: calendarOk ? "verbunden" : calendar ? "abgelaufen oder getrennt – neu verbinden" : "lädt" },
+    ...((automations?.integrationen ?? []).filter((i) => ["hubspot", "elevenlabs", "github", "n8n"].includes(i.id))
+      .map((i) => ({ name: i.name, ok: i.status === "bereit", text: i.status === "bereit" ? "bereit" : i.status === "fehler" ? "Fehler" : "nicht eingerichtet" }))),
+  ];
+
   const navButton = (s: NavItem) => (
     <button key={s.id} type="button" className={section === s.id || (s.id === "kalender" && section === "termin") ? "active" : ""}
       aria-current={section === s.id ? "page" : undefined} onClick={() => go(s.id)}>
@@ -430,6 +443,14 @@ export default function CommandView({
                 </div>
                 {canEdit && <button type="button" className="cc-btn accent" onClick={() => ask("Was steht heute an? Gib mir die drei wichtigsten Punkte.")}>Briefing von Jarvis</button>}
               </div>
+              <section className="cc-next" aria-label="Nächste Umsatzaktion">
+                <div>
+                  <span className="cc-next-label">Nächste Umsatzaktion</span>
+                  <h3>{nextSale.title}</h3>
+                  <p>{nextSale.reason}</p>
+                </div>
+                <button type="button" className="cc-btn accent" onClick={() => go(nextSale.to)}>{nextSale.action}</button>
+              </section>
               <div className="cc-focus" aria-label="Braucht deine Aufmerksamkeit">
                 {focus.length === 0 ? (
                   <div className="cc-focus-item"><p>Nichts wartet gerade auf dich – keine offenen Freigaben, nichts überfällig.</p></div>
@@ -467,6 +488,15 @@ export default function CommandView({
                         </li>
                       ))}
                     {active.length === 0 && <li className="cc-empty">Keine offenen Aufträge. Lege einen unter „Aufträge“ an oder sag es Jarvis.</li>}
+                  </ul>
+                </section>
+                <section className="cc-card-box" aria-label="Dienste">
+                  <header><h3>Verbundene Dienste</h3></header>
+                  <ul className="cc-list">
+                    {services.map((v) => (
+                      <li key={v.name} className="cc-row"><span className="grow"><span className="title">{v.name}</span></span>
+                        <span className={`cc-state ${v.ok ? "DONE" : "FAILED"}`}>{v.text}</span></li>
+                    ))}
                   </ul>
                 </section>
                 <section className="cc-card-box">
