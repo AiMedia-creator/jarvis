@@ -92,6 +92,37 @@ describe("Kommandozentrale", () => {
     expect(host.textContent).toContain("letzte bekannte Stand");
   });
 
+  it("Heute: zeigt, was den Nutzer braucht, und übergibt einen Auftrag direkt an Jarvis", async () => {
+    mockFetch(() => undefined);
+    const { host, onAsk } = await render();
+    const queue = host.querySelector(".td-queue")!;
+    expect(host.querySelector(".td-head h2")!.textContent).toContain("Eine Sache braucht dich.");
+    expect(queue.textContent).toContain("E-Mail senden");
+    expect(queue.textContent).toContain("Ziel: Gmail");
+    const input = host.querySelector<HTMLTextAreaElement>(".td-command textarea")!;
+    await click(button(host.querySelector(".td-suggest")!, "Tagesbriefing"));
+    expect(input.value).toContain("Was steht heute an?");
+    expect(onAsk).not.toHaveBeenCalled(); // Vorschläge füllen nur das Feld
+    await act(async () => { host.querySelector<HTMLFormElement>(".td-command")!.requestSubmit(); await new Promise((r) => setTimeout(r, 0)); });
+    expect(onAsk).toHaveBeenCalledWith("Was steht heute an? Gib mir die drei wichtigsten Punkte.");
+    expect(host.querySelector(".cc-center .cc-transport")).not.toBeNull(); // weiter im Command Center
+  });
+
+  it("Heute: führt vom Eintrag direkt zur Entscheidung und benennt nicht geprüfte Quellen", async () => {
+    mockFetch((c) => (c.url.startsWith("/api/agenten") ? { status: 502, body: { fehler: "aus" } } : undefined));
+    const { host } = await render();
+    expect(host.querySelector(".td-unchecked")!.textContent).toContain("Agenten");
+    await click(button(host.querySelector(".td-queue")!, "Entscheiden"));
+    expect(button(host.querySelector(".cc-work")!, "Freigeben …")).toBeTruthy();
+  });
+
+  it("Heute: Beobachter können nichts übergeben", async () => {
+    mockFetch(() => undefined);
+    const { host } = await render({ role: "observer" });
+    expect(host.querySelector<HTMLTextAreaElement>(".td-command textarea")!.disabled).toBe(true);
+    expect(host.querySelector(".td-suggest")).toBeNull();
+  });
+
   it("respektiert reduzierte Bewegung und kurze Übergänge", () => {
     const css = readFileSync("src/command/command.css", "utf8");
     expect(css).toContain("prefers-reduced-motion: reduce");

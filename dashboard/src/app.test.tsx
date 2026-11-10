@@ -128,11 +128,11 @@ describe("adaptive Oberfläche", () => {
     expect(document.querySelector(".voice-core")).toBeNull();
     for (let i = 0; i < 200 && !document.querySelector(".cc-nav"); i++) await flush(); // Arbeitsbereich wird nachgeladen
     const nav = [...document.querySelectorAll(".cc-nav button")].map((b) => b.textContent?.trim());
-    expect(nav).toEqual(expect.arrayContaining(["Übersicht", "Aufträge", "Kalender", "Agenten", "Automatisierungen", "World View", "Command Center"]));
+    expect(nav).toEqual(expect.arrayContaining(["Heute", "Command Center", "Freigaben", "Agenten", "Aufträge", "Kalender", "Skills und Automationen"]));
     const center = [...document.querySelectorAll(".cc-nav button")].find((b) => b.textContent?.trim() === "Command Center") as HTMLButtonElement;
     await act(async () => center.click());
     expect(document.querySelector(".cc-center .cc-transport input")).not.toBeNull();
-    expect(document.querySelectorAll(".cc-states .cc-seg")).toHaveLength(7);
+    expect(document.querySelector(".cc-center .cc-now")?.textContent).toContain("Bereit");
 
     // 2) Smalltalk bleibt im Gespräch
     await act(async () => user(control, "s0", "Wie geht es dir heute?"));

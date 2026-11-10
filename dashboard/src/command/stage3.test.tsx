@@ -87,6 +87,7 @@ describe("Umschalter Studio | Echtzeit", () => {
     await act(async () => echtzeit.click());
     expect(start).toHaveBeenCalledTimes(1);
     await act(async () => root.render(<CommandCenter {...base} settings={{ ...settings, sprachkern_verfuegbar: true }} voiceMode="echtzeit" />));
+    await act(async () => [...host.querySelectorAll<HTMLButtonElement>(".cc-bar button")].find((b) => b.textContent?.startsWith("Diagnose"))!.click());
     expect(host.querySelector(".cc-chain.realtime")!.textContent).toContain("ElevenLabs Agents");
     expect(host.querySelector(".cc-transport")!.textContent).toContain("Echtzeit beenden");
     expect(host.querySelector(".cc-transport")!.textContent).not.toContain("Abbrechen");
@@ -98,7 +99,7 @@ describe("Umschalter Studio | Echtzeit", () => {
     document.body.append(host);
     const root = createRoot(host);
     await act(async () => root.render(<CommandCenter {...base} settings={settings} />));
-    const button = [...host.querySelectorAll<HTMLButtonElement>(".cc-transport button")].find((b) => b.textContent === "Einstellungen")!;
+    const button = [...host.querySelectorAll<HTMLButtonElement>(".cc-bar button")].find((b) => b.textContent === "Einstellungen")!;
     await act(async () => button.click());
     const dialog = host.querySelector('[role="dialog"]')!;
     expect(dialog.textContent).toContain("Sprechpause");

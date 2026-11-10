@@ -49,35 +49,6 @@ function useNow(active: boolean): number {
   return now;
 }
 
-/** Kompakte Karte fürs Haupt-Dashboard: nur echte aktive Jobs, sonst ein ehrlicher Leerzustand. */
-export function AgentsAtWork({ data, error, onOpen }: { data: AgentCenterData | null; error: string | null; onOpen: (jobId?: string) => void }) {
-  const active = (data?.jobs ?? []).filter(isActive);
-  const now = useNow(active.length > 0);
-  const last = (data?.jobs ?? []).find((j) => !isActive(j));
-  return (
-    <section className="cc-card-box" aria-label="Agenten arbeiten">
-      <header><h3>Agenten arbeiten</h3><button type="button" className="cc-link" onClick={() => onOpen()}>Agenten-Center</button></header>
-      {!data ? <p className="cc-empty">{error ?? "Lädt …"}</p> : active.length === 0 ? (
-        <p className="cc-empty">Gerade arbeitet kein Agent.{last ? <> Zuletzt: „{last.titel}“ – {jobState(last).label.toLowerCase()}, {clock(last.ende ?? last.start)}.</> : " Seit dem Start gab es noch keinen Job."}</p>
-      ) : (
-        <ul className="cc-list">
-          {active.slice(0, 4).map((j) => (
-            <li key={j.id}>
-              <button type="button" className="cc-row" onClick={() => onOpen(j.id)}>
-                <span className={`ac-dot ${j.status}`} aria-hidden="true" />
-                <span className="grow"><span className="title">{j.titel}</span>
-                  <span className="meta">{j.agent.name} · {j.status === "WAITING_FOR_APPROVAL" ? "wartet auf deine Freigabe" : `läuft seit ${duration(now - j.start)}`}
-                    {j.schritte_gesamt > 0 && ` · ${j.schritte_fertig}/${j.schritte_gesamt} Schritte`}</span></span>
-                <span className={`cc-state ${j.status}`}>{jobState(j).label}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
 function Steps({ job }: { job: AgentJob }) {
   if (job.schritte.length === 0)
     return <p className="cc-empty">Keine Werkzeug-Schritte – der Agent hat direkt geantwortet{job.art === "echtzeit" ? " (Echtzeit-Gespräch; Schritte entstehen nur bei Werkzeugaufrufen)" : ""}.</p>;

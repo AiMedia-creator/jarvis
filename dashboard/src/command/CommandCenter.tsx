@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { AudioEngine } from "../audio";
 import type { Role, Transcript } from "../types";
-import type { Approval, Automations, Platform, Settings } from "./api";
-import { SkillPlatform } from "./SkillPlatform";
+import type { AgentJob, Approval, Automations, Platform, Settings } from "./api";
+import { duration, isActive, jobState } from "./AgentCenter";
+import { remaining } from "./model";
 import type { RealtimeSession } from "./realtime";
 import { SettingsDialog, type VoicePrefs } from "./SettingsDialog";
 import { MiniLevel, SignalBand, type BandMeter } from "./SignalBand";
@@ -110,24 +111,34 @@ export type CommandCenterProps = {
   prefs?: VoicePrefs;
   onPrefs?: (prefs: VoicePrefs) => void;
   onReset?: () => void;
+  /** Nur für lesbare Werkzeugnamen. */
   platform?: Platform | null;
-  capabilityError?: string | null;
-  onStartCapability?: (name: string, args: Record<string, unknown>) => Promise<void>;
-  onToggleSkill?: (id: string, active: boolean) => void;
-  capabilityBusy?: string | null;
-  onCapabilityAction?: (id: string, action: "abbrechen" | "wiederholen") => void;
-  onOpenOrder?: (id: string) => void;
+  /** Echte Agenten-Jobs (null = noch nicht geladen). */
+  jobs?: AgentJob[] | null;
+  jobsError?: string | null;
+  busyJob?: string | null;
+  onOpenJob?: (id?: string) => void;
+  onCancelJob?: (id: string) => void;
+  /** Erhöht sich, wenn die Eingabe den Fokus bekommen soll (⌘K). */
+  focusSignal?: number;
 };
 
-/** Command Center: Regieplatz mit echter Messung der Sprachkette (ersetzt den Bereich „Gespräch“). */
+/** Einstiege für ein leeres Gespräch: füllen nur das Feld. */
+const STARTERS = [
+  "Was steht heute an? Gib mir die drei wichtigsten Punkte.",
+  "Welche Freigaben sind offen?",
+  "Lege einen Auftrag an: ",
+];
+
+/** Command Center: Auftrag übergeben (Sprache oder Text), Antwort lesen, laufende Vorgänge und Freigaben im Blick.
+ *  Die Messung der Sprachkette bleibt vollständig erhalten, liegt aber hinter „Diagnose“. */
 export function CommandCenter({
   telemetry, audio, role, connected, transcripts, micOn, onMicChange, muted, onMutedChange, onAsk, onStop, onLog,
   automations, approvals, onOpenApprovals, settings = null, onSettings = () => undefined, voiceMode = "studio",
   onStartRealtime = async () => undefined, onStopRealtime = async () => undefined, getRealtime = () => null,
   prefs = { pause: 1.2, barge: "frei", talkMode: "frei" }, onPrefs = () => undefined, onReset = () => undefined,
-  platform = null, capabilityError = null, capabilityBusy = null,
-  onCapabilityAction = () => undefined, onOpenOrder = () => undefined,
-  onStartCapability = async () => undefined, onToggleSkill = () => undefined,
+  platform = null, jobs = null, jobsError = null, busyJob = null,
+  onOpenJob = () => undefined, onCancelJob = () => undefined, focusSignal = 0,
 }: CommandCenterProps) {
   const toolLabel = (name: string) => platform?.faehigkeiten.find((c) => c.name === name)?.titel ?? name;
   const realtimeMode = voiceMode === "echtzeit";
@@ -142,7 +153,10 @@ export function CommandCenter({
   const [permission, setPermission] = useState<PermissionState | "unbekannt">("unbekannt");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
+  const [diag, setDiag] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const threadRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (focusSignal > 0) inputRef.current?.focus(); }, [focusSignal]);
   const [fast, setFast] = useState(false);
 
   // Engine-Flags (Aufnahme, hörbare Wiedergabe) werden bei jedem Takt neu gelesen.
@@ -255,6 +269,8 @@ export function CommandCenter({
       if ((key === "m" || key === "M") && !ptt) { event.preventDefault(); void toggleMic(); }
       else if (key === "s" || key === "S") { event.preventDefault(); onMutedChange(!muted); }
       else if (key === "/") { event.preventDefault(); inputRef.current?.focus(); }
+      else if (key === "d" || key === "D") { event.preventDefault(); setDiag((d) => !d); }
+      else if (!diag) return;
       else if (key === "ArrowUp" || key === "ArrowDown") {
         if (!turns.length) return;
         event.preventDefault();
@@ -270,20 +286,26 @@ export function CommandCenter({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [muted, onMutedChange, ptt, selected?.id, settingsOpen, toggleMic, turns]);
+  }, [diag, muted, onMutedChange, ptt, selected?.id, settingsOpen, toggleMic, turns]);
 
   const jarvis = automations?.agenten.find((a) => a.id === "jarvis");
   const speech = automations?.sprache ?? null;
   const stagesNow = selected ? telemetry.stages(selected) : null;
   const activeStage = STATE_STAGE[derived.active] ?? null;
   const barge = telemetry.bargeStats();
-  const selectedTexts = useMemo(() => {
-    if (selected?.source === "realtime")
-      return (selected.texts ?? []).map((t, i) => ({ id: `${selected.id}-${i}`, role: t.role, text: t.text, stream_id: selected.id, final: true }));
-    if (!selected) return transcripts.slice(-4);
-    const own = transcripts.filter((t) => t.stream_id === selected.id);
-    return own.length ? own : [];
-  }, [selected, transcripts]);
+  // Gespräch: Studio-Züge kommen vom Server, Echtzeit-Züge aus der Sitzung des Anbieters (getrennt beschriftet, nie vermischt).
+  const realtimeLines = useMemo(() => turns.filter((t) => t.source === "realtime").slice().reverse()
+    .flatMap((t) => (t.texts ?? []).map((x, i) => ({ id: `${t.id}-${i}`, role: x.role, text: x.text, final: true }))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [version, turns]);
+  const lineCount = transcripts.length + realtimeLines.length;
+  const lastText = transcripts[transcripts.length - 1]?.text ?? "";
+  useEffect(() => {
+    const el = threadRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [lineCount, lastText]);
+  const activeJobs = (jobs ?? []).filter(isActive);
+  const lastTools = turns[0]?.tools ?? [];
   const openApprovals = approvals.filter((a) => a.status === "WAITING_FOR_APPROVAL");
   const running_ms = derived.since != null ? Math.max(0, now - derived.since) : null;
   const errorText = derived.error ? `${derived.error.stage ? `${STAGE_NAMES[derived.error.stage] ?? derived.error.stage}: ` : ""}${derived.error.message}` : null;
@@ -309,24 +331,18 @@ export function CommandCenter({
     }
   };
 
+  const stateDetail = segmentContent(derived.active);
+  const micHint = realtimeMode ? "Echtzeit-Gespräch läuft" : micOn ? (ptt ? "Mikro an · Push-to-talk" : "Mikro an") : "Mikro aus";
+
   return (
-    <div className={`cc-center ${derived.active === "offline" ? "is-offline" : ""}`} data-state={derived.active}>
-      <header className="cc-hdr-facts" aria-label="Was Jarvis gerade nutzt">
-        <span className={`cc-fact ${connected ? "ok" : "warn"}`}><b>Verbindung</b>{connected ? `verbunden${telemetry.rttMs != null ? ` · RTT ${fmtMs(telemetry.rttMs)}` : ""}` : "getrennt"}</span>
-        {realtimeMode ? (
-          <>
-            <span className="cc-fact"><b>Sprachkern</b>ElevenLabs Agents{settings?.eleven_tts_model ? ` · ${settings.eleven_tts_model}` : ""}</span>
-            <span className="cc-fact"><b>Gehirn</b>{settings?.modell ? `${settings.modell} (beim Anbieter)` : "–"}</span>
-            <span className="cc-fact"><b>Erkennung</b>beim Anbieter</span>
-          </>
-        ) : (
-          <>
-            <span className="cc-fact"><b>Gehirn</b>{jarvis ? `${jarvis.modell}${jarvis.status !== "bereit" ? ` · ${jarvis.hinweis || "nicht eingerichtet"}` : ""}` : "–"}</span>
-            <span className="cc-fact" title={speech?.stimme_hinweis || undefined}><b>Stimme</b>{speech ? `${speech.stimme} · ${speech.stimme_anbieter}${speech.stimme_modell ? ` (${speech.stimme_modell})` : ""}` : "–"}</span>
-            <span className="cc-fact"><b>Erkennung</b>{speech?.erkennung ?? "–"}</span>
-          </>
-        )}
-        <span className={`cc-fact ${permission === "denied" ? "warn" : ""}`}><b>Mikrofon</b>{realtimeMode ? "ElevenLabs-Sitzung" : micOn ? (ptt ? "an · Push-to-talk" : "an") : "aus"}{permission === "denied" ? " · blockiert" : permission === "prompt" ? " · noch nicht erlaubt" : ""}</span>
+    <div className={`cc-center ${derived.active === "offline" ? "is-offline" : ""} ${diag ? "with-diag" : ""}`} data-state={derived.active}>
+      <header className="cc-bar">
+        <div className={`cc-now ${derived.active}`}>
+          <Glyph state={derived.active} />
+          <strong>{LABEL[derived.active]}</strong>
+          {stateDetail}
+          <span className="cc-now-mic">{micHint}{permission === "denied" ? " · blockiert" : ""}</span>
+        </div>
         <div className="cc-mode" role="radiogroup" aria-label="Sprachmodus">
           {(["studio", "echtzeit"] as const).map((m) => {
             const blockedByTurn = m === "echtzeit" && !realtimeMode && derived.active !== "bereit" && derived.active !== "fehler";
@@ -340,102 +356,163 @@ export function CommandCenter({
             );
           })}
         </div>
+        <button type="button" className={`cc-btn small ${diag ? "pressed" : ""}`} aria-expanded={diag} aria-controls="cc-diag" onClick={() => setDiag((d) => !d)}>
+          Diagnose <kbd>D</kbd>
+        </button>
+        <button type="button" className="cc-btn small" onClick={() => setSettingsOpen(true)} aria-haspopup="dialog">Einstellungen</button>
       </header>
-
-      <ol className="cc-states" aria-label="Zustand">
-        {UI_STATES.map((state) => (
-          <li key={state} className={`cc-seg ${state} ${state === derived.active ? "active" : ""}`} aria-current={state === derived.active ? "step" : undefined}>
-            <Glyph state={state} />
-            <span>{LABEL[state]}</span>
-            {segmentContent(state)}
-          </li>
-        ))}
-      </ol>
       <p className="cc-sr" role="status" aria-live="polite">Zustand: {LABEL[derived.active]}</p>
       {errorText && <p className="cc-alert" role="alert">{errorText}</p>}
       {notice && <p className="cc-alert soft" role="alert">{notice} <button type="button" className="cc-link" onClick={() => setNotice(null)}>OK</button></p>}
 
       <div className="cc-center-grid">
         <div className="cc-center-main">
-          {realtimeMode || selected?.source === "realtime" ? (
-            <ol className="cc-chain realtime" aria-label="Regie-Kette (Echtzeit)">
-              <li className={`cc-tile agent ${derived.active !== "bereit" ? "active" : ""}`}>
-                <span className="cc-tile-label">ElevenLabs Agents</span>
-                <strong className="mono">–</strong>
-                <span className="cc-tile-sub">Erkennung, Claude und Stimme laufen beim Anbieter; er meldet keine Einzelzeiten.</span>
-                <span className="cc-tile-stats">Werkzeuge im Zug: {selected?.tools.length ?? 0}</span>
-              </li>
-              <li className="cc-tile gesamt">
-                <span className="cc-tile-label">Gesamt</span>
-                <strong className="mono">–</strong>
-                <span className="cc-tile-sub">kein Satzende vom Anbieter</span>
-              </li>
-            </ol>
-          ) : (
-          <ol className="cc-chain" aria-label="Regie-Kette dieses Zugs">
-            {STAGES.map((stage) => {
-              const stats = telemetry.sessionStats(stage.key);
-              const value = stagesNow?.[stage.key] ?? null;
-              return (
-                <li key={stage.key} className={`cc-tile ${stage.key} ${activeStage === stage.key ? "active" : ""}`}>
-                  <span className="cc-tile-label">{stage.label}</span>
-                  <strong className="mono" aria-label={`${stage.label}: ${fmtMs(value)}`}>{fmtMs(value)}</strong>
-                  <span className="cc-tile-sub">{stage.sub}</span>
-                  <span className="cc-tile-stats mono">Median {fmtMs(stats.median)} · P95 {fmtMs(stats.p95)}</span>
-                </li>
-              );
-            })}
-          </ol>
+          <section className="cc-thread" ref={threadRef} aria-label="Gespräch mit Jarvis" aria-live="polite" tabIndex={0}>
+            {lineCount === 0 ? (
+              <div className="cc-thread-empty">
+                <h2>Was soll Jarvis erledigen?</h2>
+                <p>{owner ? "Sprich oder schreib. Jarvis arbeitet mit seinen Agenten und fragt dich, bevor etwas nach außen geht."
+                  : "Dieses Fenster ist eine Ansicht – ein anderes Fenster steuert Jarvis."}</p>
+                {owner && (
+                  <ul aria-label="Einstiege – füllen das Feld, senden nichts">
+                    {STARTERS.map((starter) => (
+                      <li key={starter}><button type="button" onClick={() => { setText(starter); inputRef.current?.focus(); }}>{starter.trim()}{starter.endsWith(" ") ? " …" : ""}</button></li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ) : (
+              <>
+                {transcripts.map((t) => (
+                  <p key={t.id} className={`cc-line ${t.role} ${t.final ? "" : "pending"}`}><b>{t.role === "user" ? "Du" : "Jarvis"}</b>{t.text}</p>
+                ))}
+                {realtimeLines.length > 0 && <p className="cc-thread-mark">Echtzeit-Gespräch</p>}
+                {realtimeLines.map((t) => (
+                  <p key={t.id} className={`cc-line ${t.role}`}><b>{t.role === "user" ? "Du" : "Jarvis"}</b>{t.text}</p>
+                ))}
+              </>
+            )}
+          </section>
+
+          {diag && (
+            <section className="cc-diag" id="cc-diag" aria-label="Diagnose der Sprachkette">
+              <div className="cc-hdr-facts" aria-label="Was Jarvis gerade nutzt">
+                <span className={`cc-fact ${connected ? "ok" : "warn"}`}><b>Verbindung</b>{connected ? `verbunden${telemetry.rttMs != null ? ` · RTT ${fmtMs(telemetry.rttMs)}` : ""}` : "getrennt"}</span>
+                {realtimeMode ? (
+                  <>
+                    <span className="cc-fact"><b>Sprachkern</b>ElevenLabs Agents{settings?.eleven_tts_model ? ` · ${settings.eleven_tts_model}` : ""}</span>
+                    <span className="cc-fact"><b>Gehirn</b>{settings?.modell ? `${settings.modell} (beim Anbieter)` : "–"}</span>
+                    <span className="cc-fact"><b>Erkennung</b>beim Anbieter</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="cc-fact"><b>Gehirn</b>{jarvis ? `${jarvis.modell}${jarvis.status !== "bereit" ? ` · ${jarvis.hinweis || "nicht eingerichtet"}` : ""}` : "–"}</span>
+                    <span className="cc-fact" title={speech?.stimme_hinweis || undefined}><b>Stimme</b>{speech ? `${speech.stimme} · ${speech.stimme_anbieter}${speech.stimme_modell ? ` (${speech.stimme_modell})` : ""}` : "–"}</span>
+                    <span className="cc-fact"><b>Erkennung</b>{speech?.erkennung ?? "–"}</span>
+                  </>
+                )}
+                <span className={`cc-fact ${permission === "denied" ? "warn" : ""}`}><b>Mikrofon</b>{realtimeMode ? "ElevenLabs-Sitzung" : micOn ? (ptt ? "an · Push-to-talk" : "an") : "aus"}{permission === "denied" ? " · blockiert" : permission === "prompt" ? " · noch nicht erlaubt" : ""}</span>
+              </div>
+              <ol className="cc-states" aria-label="Zustand">
+                {UI_STATES.map((state) => (
+                  <li key={state} className={`cc-seg ${state} ${state === derived.active ? "active" : ""}`} aria-current={state === derived.active ? "step" : undefined}>
+                    <Glyph state={state} />
+                    <span>{LABEL[state]}</span>
+                    {state !== derived.active && derived.also.includes(state) ? <i className="cc-side-dot" title="gilt gleichzeitig" /> : null}
+                  </li>
+                ))}
+              </ol>
+              {realtimeMode || selected?.source === "realtime" ? (
+                <ol className="cc-chain realtime" aria-label="Regie-Kette (Echtzeit)">
+                  <li className={`cc-tile agent ${derived.active !== "bereit" ? "active" : ""}`}>
+                    <span className="cc-tile-label">ElevenLabs Agents</span>
+                    <strong className="mono">–</strong>
+                    <span className="cc-tile-sub">Erkennung, Claude und Stimme laufen beim Anbieter; er meldet keine Einzelzeiten.</span>
+                    <span className="cc-tile-stats">Werkzeuge im Zug: {selected?.tools.length ?? 0}</span>
+                  </li>
+                  <li className="cc-tile gesamt">
+                    <span className="cc-tile-label">Gesamt</span>
+                    <strong className="mono">–</strong>
+                    <span className="cc-tile-sub">kein Satzende vom Anbieter</span>
+                  </li>
+                </ol>
+              ) : (
+                <ol className="cc-chain" aria-label="Regie-Kette dieses Zugs">
+                  {STAGES.map((stage) => {
+                    const stats = telemetry.sessionStats(stage.key);
+                    const value = stagesNow?.[stage.key] ?? null;
+                    return (
+                      <li key={stage.key} className={`cc-tile ${stage.key} ${activeStage === stage.key ? "active" : ""}`}>
+                        <span className="cc-tile-label">{stage.label}</span>
+                        <strong className="mono" aria-label={`${stage.label}: ${fmtMs(value)}`}>{fmtMs(value)}</strong>
+                        <span className="cc-tile-sub">{stage.sub}</span>
+                        <span className="cc-tile-stats mono">Median {fmtMs(stats.median)} · P95 {fmtMs(stats.p95)}</span>
+                      </li>
+                    );
+                  })}
+                </ol>
+              )}
+              <SignalBand source={bandSource} connected={connected} disconnectedAt={telemetry.disconnectedAt} reduced={reduced} redrawKey={version} />
+              <TurnTape telemetry={telemetry} selectedId={selected?.id ?? null} onSelect={setSelectedId}
+                details={details} onToggleDetails={() => setDetails((d) => !d)} now={now} />
+              <dl className="cc-kv cc-diag-kv">
+                <dt>Unterbrechungen</dt><dd className="mono">{barge.count}</dd>
+                <dt>Stopp (Median)</dt><dd className="mono">{fmtMs(barge.median)}</dd>
+                <dt>Züge dieser Sitzung</dt><dd className="mono">{turns.length}</dd>
+                <dt>Uhrabgleich</dt><dd className="mono">{telemetry.offset == null ? "läuft" : `± ${fmtMs((telemetry.rttMs ?? 0) / 2)}`}</dd>
+              </dl>
+            </section>
           )}
-
-          <SkillPlatform platform={platform} error={capabilityError} canEdit={owner} busy={capabilityBusy}
-            onAction={onCapabilityAction} onOpenOrder={onOpenOrder} onStart={onStartCapability}
-            onToggleSkill={onToggleSkill} onOpenApprovals={onOpenApprovals} />
-
-          <SignalBand source={bandSource} connected={connected} disconnectedAt={telemetry.disconnectedAt} reduced={reduced} redrawKey={version} />
-
-          <TurnTape telemetry={telemetry} selectedId={selected?.id ?? null} onSelect={setSelectedId}
-            details={details} onToggleDetails={() => setDetails((d) => !d)} now={now} />
         </div>
 
-        <aside className="cc-center-side" aria-label="Gesprächszug im Detail">
-          <section className="cc-transcript" aria-live="polite">
-            <h3>{selected ? "Transkript dieses Zugs" : "Transkript"}</h3>
-            {selectedTexts.length === 0 && <p className="cc-empty">Noch kein Text – sprich oder schreib Jarvis.</p>}
-            {selectedTexts.map((t) => (
-              <p key={t.id} className={`cc-line ${t.role} ${t.final ? "" : "pending"}`}><b>{t.role === "user" ? "Du" : "Jarvis"}</b>{t.text}</p>
-            ))}
-          </section>
-          <section>
-            <h3>Werkzeuge im Zug</h3>
-            {selected?.tools.length ? (
-              <ul className="cc-mini-list">{selected.tools.map((tool, i) => (
-                <li key={i}><span>{toolLabel(tool.name)}</span><span className="mono">{selected.t0 != null ? `+${fmtMs(tool.t - selected.t0)}` : "–"}</span></li>
-              ))}</ul>
-            ) : <p className="cc-empty">Keine Werkzeuge aufgerufen.</p>}
-          </section>
-          <section>
-            <h3>Offene Freigaben</h3>
+        <aside className="cc-center-side" aria-label="Vorgänge">
+          <section className={openApprovals.length ? "attn" : ""}>
+            <h3>Wartet auf dich</h3>
             {openApprovals.length ? (
               <>
-                <ul className="cc-mini-list">{openApprovals.slice(0, 3).map((a) => <li key={a.id}><span>{a.vorschau?.titel || a.werkzeug || "Freigabe"}</span></li>)}</ul>
-                <button type="button" className="cc-btn small" onClick={onOpenApprovals}>Zu den Freigaben ({openApprovals.length})</button>
+                <ul className="cc-mini-list">{openApprovals.slice(0, 3).map((a) => (
+                  <li key={a.id}><span>{a.vorschau?.titel || a.werkzeug || "Freigabe"}</span><span className="mono">{remaining(a.laeuft_ab)}</span></li>
+                ))}</ul>
+                <button type="button" className="cc-btn small accent" onClick={onOpenApprovals}>Freigaben entscheiden ({openApprovals.length})</button>
               </>
             ) : <p className="cc-empty">Nichts wartet auf dich.</p>}
           </section>
           <section>
-            <h3>Unterbrechen</h3>
-            <dl className="cc-kv">
-              <dt>Unterbrechungen</dt><dd className="mono">{barge.count}</dd>
-              <dt>Stopp (Median)</dt><dd className="mono">{fmtMs(barge.median)}</dd>
-              <dt>Züge dieser Sitzung</dt><dd className="mono">{turns.length}</dd>
-              <dt>Uhrabgleich</dt><dd className="mono">{telemetry.offset == null ? "läuft" : `± ${fmtMs((telemetry.rttMs ?? 0) / 2)}`}</dd>
-            </dl>
+            <h3>Laufende Vorgänge</h3>
+            {jobs == null ? <p className="cc-empty">{jobsError ?? "Lädt …"}</p> : activeJobs.length === 0 ? (
+              <p className="cc-empty">Kein Agent arbeitet gerade.</p>
+            ) : (
+              <ul className="cc-ops">
+                {activeJobs.slice(0, 5).map((j) => (
+                  <li key={j.id}>
+                    <button type="button" className="cc-op" onClick={() => onOpenJob(j.id)}>
+                      <span className={`ac-dot ${j.status}`} aria-hidden="true" />
+                      <span className="cc-op-main"><strong>{j.titel}</strong>
+                        <span>{j.agent.name} · {j.status === "WAITING_FOR_APPROVAL" ? "wartet auf deine Freigabe" : `${jobState(j).label.toLowerCase()} seit ${duration(Date.now() / 1000 - j.start)}`}
+                          {j.schritte_gesamt > 0 ? ` · Schritt ${j.schritte_fertig}/${j.schritte_gesamt}` : ""}</span></span>
+                    </button>
+                    {owner && j.abbrechbar && j.status !== "WAITING_FOR_APPROVAL" && (
+                      <button type="button" className="cc-btn small" disabled={busyJob === j.id} onClick={() => onCancelJob(j.id)}
+                        aria-label={`Abbrechen: ${j.titel}`}>Abbrechen</button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <button type="button" className="cc-link" onClick={() => onOpenJob()}>Alle Jobs und Ergebnisse</button>
+          </section>
+          <section>
+            <h3>Werkzeuge im letzten Zug</h3>
+            {lastTools.length ? (
+              <ul className="cc-mini-list">{lastTools.map((tool, i) => (
+                <li key={i}><span>{toolLabel(tool.name)}</span><span className="mono">{turns[0].t0 != null ? `+${fmtMs(tool.t - turns[0].t0)}` : "–"}</span></li>
+              ))}</ul>
+            ) : <p className="cc-empty">Keine Werkzeuge aufgerufen.</p>}
           </section>
         </aside>
       </div>
 
-      <form className="cc-transport" aria-label="Transportleiste" onSubmit={(e) => { e.preventDefault(); send(); }}>
+      <form className="cc-transport" aria-label="Eingabe" onSubmit={(e) => { e.preventDefault(); send(); }}>
         {realtimeMode ? (
           <button type="button" className="cc-tbtn on" onClick={() => void toggleMic()} disabled={!owner || switching}>
             <Glyph state="hoert" /> Echtzeit beenden
@@ -466,7 +543,6 @@ export function CommandCenter({
         <button type="button" className={`cc-tbtn ${muted ? "on" : ""}`} aria-pressed={muted} onClick={() => onMutedChange(!muted)}>
           {muted ? "Stumm an" : "Stumm"} <kbd>S</kbd>
         </button>
-        <button type="button" className="cc-tbtn" onClick={() => setSettingsOpen(true)} aria-haspopup="dialog">Einstellungen</button>
       </form>
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} prefs={prefs} onPrefs={onPrefs}
         settings={settings} onSettings={onSettings} onReset={onReset} canEdit={owner} />

@@ -46,12 +46,19 @@ async function render(overrides: Partial<CommandCenterProps> = {}) {
   await act(async () => root!.render(<CommandCenter {...props} />));
   return { host, props };
 }
+const openDiag = (host: HTMLElement) =>
+  act(async () => [...host.querySelectorAll<HTMLButtonElement>(".cc-bar button")].find((b) => b.textContent?.startsWith("Diagnose"))!.click());
 const key = (k: string, target: EventTarget = window) =>
   act(() => void target.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true })));
 
 describe("Command Center", () => {
-  it("zeigt nur echte Fakten und sieben Zustandssegmente", async () => {
+  it("zeigt im Normalfall Gespräch und Vorgänge, die Messung erst in der Diagnose", async () => {
     const { host } = await render();
+    expect(host.querySelector(".cc-now")!.textContent).toContain("Bereit");
+    expect(host.querySelector(".cc-thread")!.textContent).toContain("Was soll Jarvis erledigen?");
+    expect(host.querySelector(".cc-hdr-facts")).toBeNull();
+    expect(host.querySelector(".cc-tile")).toBeNull();
+    await openDiag(host);
     const facts = host.querySelector(".cc-hdr-facts")!.textContent!;
     expect(facts).toContain("claude-haiku-5-5");
     expect(facts).toContain("George · ElevenLabs");
@@ -64,6 +71,7 @@ describe("Command Center", () => {
 
   it("ohne Server-Angaben bleibt die Kopfzeile ehrlich leer", async () => {
     const { host } = await render({ automations: null });
+    await openDiag(host);
     expect(host.querySelector(".cc-hdr-facts")!.textContent).toContain("Stimme–");
   });
 
@@ -105,13 +113,58 @@ describe("Command Center", () => {
   it("zeigt Offline mit Vorrang und einen Fehler mit Stufe", async () => {
     const telemetry = new Telemetry();
     const { host } = await render({ telemetry, connected: false });
-    expect(host.querySelector(".cc-seg.active")!.textContent).toContain("Offline");
+    expect(host.querySelector(".cc-now")!.textContent).toContain("Offline");
     await act(async () => root!.render(<CommandCenter {...({} as any)} {...{
       telemetry, audio: fakeAudio() as any, role: "owner", connected: true, transcripts: [], micOn: false, onMicChange: vi.fn(),
       muted: false, onMutedChange: vi.fn(), onAsk: vi.fn(), onStop: vi.fn(), onLog: vi.fn(), automations: null, approvals: [], onOpenApprovals: vi.fn(),
     }} />));
     await act(async () => telemetry.onServer({ type: "ERROR", stage: "stt", message: "Spracherkennung ist belegt." }));
-    expect(host.querySelector(".cc-seg.active")!.textContent).toContain("Fehler");
+    expect(host.querySelector(".cc-now")!.textContent).toContain("Fehler");
     expect(host.querySelector('[role="alert"]')!.textContent).toContain("Erkennung: Spracherkennung ist belegt.");
+  });
+
+  it("zeigt das ganze Gespräch und füllt Einstiege nur ins Feld", async () => {
+    const { host, props } = await render();
+    const starter = host.querySelector<HTMLButtonElement>(".cc-thread-empty li button")!;
+    await act(async () => starter.click());
+    expect(host.querySelector<HTMLInputElement>(".cc-transport input")!.value).toContain("Was steht heute an?");
+    expect(props.onAsk).not.toHaveBeenCalled();
+    await act(async () => root!.render(<CommandCenter {...props} transcripts={[
+      { id: "u1", role: "user", text: "Leg einen Auftrag für Weber an.", stream_id: "s1", final: true },
+      { id: "a1", role: "assistant", text: "Erledigt – Auftrag steht im Eingang.", stream_id: "s1", final: true },
+      { id: "u2", role: "user", text: "Danke.", stream_id: "s2", final: true },
+    ]} />));
+    expect([...host.querySelectorAll(".cc-thread .cc-line")].map((el) => el.textContent)).toEqual([
+      "DuLeg einen Auftrag für Weber an.", "JarvisErledigt – Auftrag steht im Eingang.", "DuDanke.",
+    ]);
+  });
+
+  it("zeigt laufende Vorgänge aus echten Jobs und bricht nur im steuernden Fenster ab", async () => {
+    const job = { id: "j1", titel: "Repo analysieren", art: "faehigkeit", status: "RUNNING", agent: { id: "jarvis", name: "Jarvis", art: "haupt" },
+      unteragenten: [], gespraech: "", start: Date.now() / 1000 - 30, ende: null, letzte_aktivitaet: 0, schritte: [], schritte_gesamt: 3, schritte_fertig: 1,
+      fortschritt: "", werkzeuge: [], ergebnis: null, fehler: null, unterbrochen_durch_neustart: false, freigaben: [], abbrechbar: true, wiederholbar: false,
+      faehigkeit: null, modell: null, nutzung: null, repo: null };
+    const onCancelJob = vi.fn(), onOpenJob = vi.fn();
+    const { host, props } = await render({ jobs: [job, { ...job, id: "j0", status: "COMPLETED", titel: "Alt" }] as any, onCancelJob, onOpenJob });
+    const ops = host.querySelector(".cc-ops")!;
+    expect(ops.textContent).toContain("Repo analysieren");
+    expect(ops.textContent).toContain("Schritt 1/3");
+    expect(ops.textContent).not.toContain("Alt");
+    await act(async () => ops.querySelector<HTMLButtonElement>(".cc-op")!.click());
+    expect(onOpenJob).toHaveBeenCalledWith("j1");
+    await act(async () => [...ops.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Abbrechen")!.click());
+    expect(onCancelJob).toHaveBeenCalledWith("j1");
+    await act(async () => root!.render(<CommandCenter {...props} role="observer" />));
+    expect([...host.querySelectorAll(".cc-ops button")].some((b) => b.textContent === "Abbrechen")).toBe(false);
+  });
+
+  it("nennt offene Freigaben und führt zur Entscheidung", async () => {
+    const onOpenApprovals = vi.fn();
+    const { host } = await render({ onOpenApprovals, approvals: [{ id: "f1", werkzeug: "mail_senden", status: "WAITING_FOR_APPROVAL", status_text: "", ergebnis: "",
+      erstellt: 0, laeuft_ab: Date.now() / 1000 + 600, job: null, graph: null, vorschau: { titel: "E-Mail an Weber", ziel: "Gmail", zeilen: [] } }] });
+    const box = host.querySelector(".cc-center-side section.attn")!;
+    expect(box.textContent).toContain("E-Mail an Weber");
+    await act(async () => box.querySelector<HTMLButtonElement>("button")!.click());
+    expect(onOpenApprovals).toHaveBeenCalled();
   });
 });
