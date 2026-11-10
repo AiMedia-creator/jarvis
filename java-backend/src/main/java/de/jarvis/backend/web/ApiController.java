@@ -224,6 +224,13 @@ public final class ApiController {
         return write(key, body == null ? Mono.empty() : body, exchange);
     }
 
+    /** Anruf-Copilot: Projekte, Kennzahlen, letzte Anrufe (nur lesend). */
+    @GetMapping("/api/anrufe")
+    public Mono<ResponseEntity<?>> anrufe(@RequestParam(defaultValue = "7") int tage, ServerWebExchange exchange) {
+        if (!sessions.authorized(exchange)) return Mono.just(ResponseEntity.status(401).body(Map.of("fehler", "Session erforderlich.")));
+        return forward("GET", "/internal/anrufe?tage=" + Math.max(1, Math.min(365, tage)), null);
+    }
+
     /** Jarvis-Laufzeitfähigkeiten: Definitionen und letzte Läufe (Status, Ergebnis, Abbruch). */
     @GetMapping("/api/faehigkeiten")
     public Mono<ResponseEntity<?>> faehigkeiten(ServerWebExchange exchange) {

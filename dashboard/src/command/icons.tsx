@@ -7,6 +7,7 @@ const paths: Record<string, string> = {
   automation: "M13 3 5 14h6l-1 7 8-11h-6z",
   world: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9S14.5 18.4 12 21c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z",
   chat: "M4 5h16v11H9l-5 4z",
+  phone: "M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a1 1 0 0 1-1 1A15 15 0 0 1 4 5a1 1 0 0 1 1-1z",
   approvals: "M5 12l4 4 10-10",
   news: "M4 5h13v14H6a2 2 0 0 1-2-2zM17 9h3v8a2 2 0 0 1-2 2M8 9h5M8 13h5",
   market: "M4 19V5M4 19h16M8 15l3-4 3 2 5-6",

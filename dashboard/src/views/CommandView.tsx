@@ -2,6 +2,7 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useReducer, useRef, us
 import { api, ApiError, type Approval, type Automations, type CalendarData, type CalendarEvent, type Column, type Job, type Order, type OrderStatus } from "../command/api";
 import { boardReducer, dayKey, initialBoard, matches, timeRange } from "../command/model";
 import { KanbanPanel } from "../command/KanbanPanel";
+import { CallsPanel } from "../command/CallsPanel";
 import { ApprovalsPanel } from "../command/ApprovalsPanel";
 import { AgendaPanel } from "../command/AgendaPanel";
 import { AgentsPanel, AutomationsPanel, stateLabel } from "../command/AutomationPanels";
@@ -11,7 +12,7 @@ import { Telemetry } from "../command/telemetry";
 import { LiveCamera, useBusEvents, type CameraInfo } from "../command/LiveCamera";
 import type { RealtimeSession } from "../command/realtime";
 import { DEFAULT_PREFS, type VoicePrefs } from "../command/SettingsDialog";
-import type { CapabilityRun, Platform, Settings } from "../command/api";
+import type { CallOverview, CapabilityRun, Platform, Settings } from "../command/api";
 import { Icon } from "../command/icons";
 import type { ContentView } from "../view/intent";
 import type { AudioEngine } from "../audio";
@@ -22,12 +23,13 @@ const CalendarPanel = lazy(() => import("../command/CalendarPanel"));
 const MapboxWorld = lazy(() => import("../world/MapboxWorld"));
 
 export type CommandSection =
-  | "uebersicht" | "auftraege" | "kalender" | "termin" | "agenten" | "automatisierungen" | "welt" | "gespraech" | "freigaben";
+  | "uebersicht" | "auftraege" | "kalender" | "termin" | "anrufe" | "agenten" | "automatisierungen" | "welt" | "gespraech" | "freigaben";
 type NavItem = { id: CommandSection; label: string; icon: string };
 const SECTIONS: NavItem[] = [
   { id: "uebersicht", label: "Übersicht", icon: "overview" },
   { id: "auftraege", label: "Aufträge", icon: "orders" },
   { id: "kalender", label: "Kalender", icon: "calendar" },
+  { id: "anrufe", label: "Anrufe", icon: "phone" },
   { id: "agenten", label: "Agenten", icon: "agents" },
   { id: "automatisierungen", label: "Automatisierungen", icon: "automation" },
   { id: "welt", label: "World View", icon: "world" },
@@ -35,7 +37,7 @@ const SECTIONS: NavItem[] = [
   { id: "freigaben", label: "Freigaben", icon: "approvals" },
 ];
 const TITLES: Record<CommandSection, string> = {
-  uebersicht: "Übersicht", auftraege: "Aufträge", kalender: "Kalender", termin: "Termin", agenten: "Agenten",
+  uebersicht: "Übersicht", auftraege: "Aufträge", kalender: "Kalender", termin: "Termin", anrufe: "Anrufe", agenten: "Agenten",
   automatisierungen: "Automatisierungen", welt: "World View", gespraech: "Command Center", freigaben: "Freigaben",
 };
 const MORE: { id: ContentView; label: string; icon: string }[] = [
@@ -54,7 +56,7 @@ const COLUMN_TITLES: Partial<Record<OrderStatus, string>> = { freigabe: "Prüfun
 const PRIO_ORDER = ["kritisch", "hoch", "normal", "niedrig"];
 
 const ALIASES: [RegExp, CommandSection][] = [
-  [/auftr|kanban|board/, "auftraege"], [/kalender|termin/, "kalender"], [/agenda/, "kalender"], [/agent/, "agenten"],
+  [/auftr|kanban|board/, "auftraege"], [/kalender|termin/, "kalender"], [/agenda/, "kalender"], [/anruf|telefon|vertrieb|lead/, "anrufe"], [/agent/, "agenten"],
   [/automat|ablauf|abläuf|workflow|n8n/, "automatisierungen"], [/welt|karte|world|map/, "welt"],
   [/gespr|chat|coach|command center|sprach/, "gespraech"], [/freigab/, "freigaben"], [/übersicht|uebersicht|start|home/, "uebersicht"],
 ];
@@ -129,6 +131,8 @@ export default function CommandView({
   const [settings, setSettings] = useState<Settings | null>(null);
   const [camera, setCamera] = useState<CameraInfo | null>(null);
   const [platform, setPlatform] = useState<Platform | null>(null);
+  const [calls, setCalls] = useState<CallOverview | null>(null);
+  const [callsError, setCallsError] = useState<string | null>(null);
   const [capError, setCapError] = useState<string | null>(null);
   const [capBusy, setCapBusy] = useState<string | null>(null);
   const alive = useRef(true);
@@ -157,6 +161,18 @@ export default function CommandView({
       if (alive.current) setOffline(error instanceof ApiError ? error.message : "Jarvis-Server nicht erreichbar.");
     }
   }, []);
+  const loadCalls = useCallback(async () => {
+    try {
+      const data = await api.calls(7);
+      if (!alive.current) return;
+      if (!data || !Array.isArray(data.projekte) || !data.kennzahlen) throw new Error("Unerwartete Antwort vom Anruf-Speicher.");
+      setCalls(data);
+      setCallsError(null);
+    } catch (error) {
+      if (alive.current) setCallsError(error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Anrufe nicht erreichbar.");
+    }
+  }, []);
+  useEffect(() => { if (section === "anrufe") void loadCalls(); }, [section, loadCalls]);
   const loadApprovals = useCallback(async () => {
     try {
       const data = await api.approvals();
@@ -496,6 +512,13 @@ export default function CommandView({
           {section === "termin" && (event
             ? <EventDetail event={event} data={calendar} canAsk={canEdit} onAsk={ask} onBack={() => go("kalender")} />
             : <p className="cc-empty">Kein Termin ausgewählt. <button type="button" className="cc-link" onClick={() => go("kalender")}>Zum Kalender</button></p>)}
+          {section === "anrufe" && (
+            <>
+              <div className="cc-page-head"><div><h2>Anrufe</h2><p>Gemessene Zahlen aus den von Jarvis erfassten Gesprächen. Nichts wird ohne Freigabe ins CRM geschrieben.</p></div>
+                <button type="button" className="cc-link" onClick={() => void loadCalls()}>Aktualisieren</button></div>
+              <CallsPanel data={calls} error={callsError} canAsk={canEdit} onAsk={ask} />
+            </>
+          )}
           {section === "agenten" && (
             <>
               <div className="cc-page-head"><div><h2>Agenten</h2><p>Welche KI-Rollen Jarvis wirklich bereitstellt und was gerade läuft.</p></div></div>

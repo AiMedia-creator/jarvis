@@ -25,6 +25,7 @@ CORE_TOOLS = {
     "seite_oeffnen", "programm_oeffnen", "in_zwischenablage", "wetter", "rechnen", "lies_skill",
     "hintergrund_auftrag", "live_kamera", "kamera_schliessen", TOOL_NAME,
     "auftrag_anlegen",  # Laufzeitfähigkeit: gesprochenen Auftrag erfassen (lokal, ohne Freigabe)
+    "projekt_speichern", "projekt_liste", "anruf_erfassen", "anruf_karte", "anruf_kennzahlen", "anruf_crm_status",
     "skill_starten", "github_suchen", "github_analysieren",  # Aufträge, die unabhängig von der Sprachsitzung laufen
 }
 

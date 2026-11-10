@@ -578,6 +578,15 @@ class Bridge:
                 "cloud": {"erlaubt": cloud_skills.allowed(), "verfuegbar": sorted(cloud_skills.ANTHROPIC_SKILLS),
                           "sperrgrund": cloud_skills.lock_reason(), "anbieter": "Claude API (api.anthropic.com)"}}
 
+    async def anrufe_uebersicht(self, request):
+        """Anruf-Copilot: Projekte, gemessene Kennzahlen und letzte Anrufe (nur lesend, nur lokale Daten)."""
+        from . import anrufe
+        try:
+            tage = max(1, min(int(request.query.get("tage", "7")), 365))
+        except ValueError:
+            tage = 7
+        return web.json_response(await asyncio.to_thread(anrufe.uebersicht, tage))
+
     async def faehigkeiten_list(self, request):
         return web.json_response(await asyncio.to_thread(self._platform))
 
@@ -915,6 +924,7 @@ def create_app(token: str | None = None, demo: bool | None = None) -> web.Applic
     app.router.add_post("/internal/tts/preview", bridge.tts_preview)
     app.router.add_get("/internal/logs/{art}", bridge.logs)
     app.router.add_get("/internal/events", bridge.events_poll)
+    app.router.add_get("/internal/anrufe", bridge.anrufe_uebersicht)
     app.router.add_get("/internal/faehigkeiten", bridge.faehigkeiten_list)
     app.router.add_post("/internal/faehigkeiten/starten", bridge.faehigkeit_starten)
     app.router.add_post("/internal/faehigkeiten/{id}/{aktion}", bridge.faehigkeit_aktion)

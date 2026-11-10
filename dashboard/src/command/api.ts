@@ -102,6 +102,17 @@ export type Settings = {
   sprachkern_verfuegbar: boolean; sprachkern_problem: string | null;
   eleven_tts_model: string; eleven_tts_modelle: string[]; google: boolean; hubspot: boolean; demo?: boolean;
 };
+export type CallProject = { id: string; version: number; name: string; crm: string; zielgruppe: string; leitfaden: string; regeln: string; notiz: string; aktiv: boolean };
+export type CallRecord = {
+  id: string; projekt_id: string; erstellt: number; lead_name: string; firma: string; rolle: string; telefon_status: string;
+  kontakt_quelle: string; ergebnis: string; notiz: string; naechster_schritt: string; frist: string; crm_status: string;
+  dauer_s: number | null; auftrag_id: string;
+};
+export type CallStats = {
+  zeitraum_tage: number; gespraeche: number; nach_ergebnis: Record<string, number>; termine: number; termine_pro_100: number | null;
+  crm_offen: number; followups_faellig: number; mit_naechstem_schritt: number; mittlere_dauer_s: number | null; quelle: string; stand: string;
+};
+export type CallOverview = { projekte: CallProject[]; kennzahlen: CallStats; letzte_anrufe: CallRecord[]; ergebnisse: Record<string, string> };
 export type BusEvent = { seq: number; typ: string; [key: string]: any };
 /** Jarvis-Laufzeitfähigkeit (ausführbar, aus jarvis/faehigkeiten.py) – nicht zu verwechseln mit Markdown-Skills. */
 export type Capability = {
@@ -200,6 +211,7 @@ export const api = {
   events: (after: number, timeout: number, signal?: AbortSignal) =>
     fetch(`/api/events?after=${after}&timeout=${timeout}`, { credentials: "same-origin", signal })
       .then(async (r) => { if (!r.ok) throw new ApiError(r.status, `Ereignisse nicht erreichbar (${r.status})`); return r.json() as Promise<{ events: BusEvent[]; seq: number }>; }),
+  calls: (tage = 7) => call<CallOverview>("GET", `/api/anrufe?tage=${tage}`),
   capabilities: () => call<Platform>("GET", "/api/faehigkeiten"),
   startCapability: (name: string, args: Record<string, unknown>) =>
     call<{ lauf: CapabilityRun }>("POST", "/api/faehigkeiten/starten", { name, args }),

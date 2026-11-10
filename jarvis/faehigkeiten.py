@@ -19,6 +19,7 @@ Berechtigung "extern" (Daten außerhalb von Jarvis ändern) läuft immer über V
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import threading
 import time
 from dataclasses import dataclass, field
@@ -405,6 +406,78 @@ def _cloud_dokument(args: dict, lauf: Lauf) -> dict:
     return cloud_skills.run(args["skill"], args["auftrag"], check=lauf.pruefen, progress=lauf.fortschritt)
 
 
+def _projekt_speichern(args: dict, lauf: Lauf) -> dict:
+    from . import anrufe
+
+    lauf.pruefen()
+    felder = {k: v for k, v in args.items() if k not in ("projekt_id",) and v not in (None, "")}
+    try:
+        projekt = anrufe.projekt_speichern(felder, args.get("projekt_id") or None)
+    except anrufe.AnrufError as exc:
+        raise ValueError(str(exc)) from exc
+    return {"text": f"Projekt {projekt['name']} gespeichert ({projekt['id']}, CRM: {projekt['crm']}).", "projekt": projekt}
+
+
+def _projekt_liste(args: dict, lauf: Lauf) -> dict:
+    from . import anrufe
+
+    ps = anrufe.projekte_liste(nur_aktive=True)
+    text = "; ".join(f"{p['name']} ({p['id']}, CRM: {p['crm']})" for p in ps) or "Noch kein Projekt angelegt."
+    return {"text": text, "projekte": ps}
+
+
+def _anruf_erfassen(args: dict, lauf: Lauf) -> dict:
+    from . import anrufe
+
+    lauf.pruefen()
+    try:
+        pid = anrufe.projekt_finden(args.get("projekt"))
+        felder = {k: v for k, v in args.items() if k != "projekt" and v not in (None, "")}
+        # request_id = Job-ID: ein wiederholter Aufruf desselben Laufs speichert nichts doppelt.
+        call = anrufe.anruf_erfassen(felder, pid, request_id="lauf-" + lauf.job["id"])
+    except anrufe.AnrufError as exc:
+        raise ValueError(f"Anruf nicht gespeichert: {exc}") from exc
+    teile = [f"Anruf {call['id']} gespeichert: {anrufe.ERGEBNISSE[call['ergebnis']]}"]
+    if call.get("auftrag_id"):
+        teile.append(f"Nächster Schritt als Auftrag {call['auftrag_id']} im Kanban (Eingang)")
+    if call.get("auftrag_fehler"):
+        teile.append("Auftrag NICHT angelegt: " + call["auftrag_fehler"])
+    teile.append("CRM-Eintrag ist noch offen – nichts wurde ins CRM geschrieben" if call["crm_status"] == "offen"
+                 else f"CRM-Status: {call['crm_status']}")
+    return {"text": ". ".join(teile) + ".", "anruf": call}
+
+
+def _anruf_karte(args: dict, lauf: Lauf) -> dict:
+    from . import anrufe
+
+    try:
+        karte = anrufe.lead_karte(anrufe.projekt_finden(args.get("projekt")), args.get("name", ""), args.get("firma", ""))
+    except anrufe.AnrufError as exc:
+        raise ValueError(str(exc)) from exc
+    return {"text": json.dumps(karte, ensure_ascii=False), "karte": karte}
+
+
+def _anruf_kennzahlen(args: dict, lauf: Lauf) -> dict:
+    from . import anrufe
+
+    try:
+        pid = anrufe.projekt_finden(args["projekt"]) if args.get("projekt") else None
+        k = anrufe.kennzahlen(int(args.get("tage") or 7), pid)
+    except anrufe.AnrufError as exc:
+        raise ValueError(str(exc)) from exc
+    return {"text": json.dumps(k, ensure_ascii=False), "kennzahlen": k}
+
+
+def _anruf_crm_status(args: dict, lauf: Lauf) -> dict:
+    from . import anrufe
+
+    try:
+        call = anrufe.crm_status_setzen(args["anruf_id"], args["status"])
+    except anrufe.AnrufError as exc:
+        raise ValueError(str(exc)) from exc
+    return {"text": f"CRM-Status von {call['id']}: {call['crm_status']}.", "anruf": call}
+
+
 _builtin_done = False
 
 
@@ -459,6 +532,51 @@ def _ensure_builtin() -> None:
         pflicht=["repo"], berechtigung="lokal", ausfuehren=_github_analysieren, warten=25.0, zeitlimit=420.0,
         sperre=lambda: "" if __import__("shutil").which("git") else "git ist nicht installiert.",
     ))
+    register(Faehigkeit(
+        name="projekt_speichern", titel="Projekt anlegen/ändern",
+        beschreibung="Legt ein Vertriebsprojekt an oder ändert es (Name, CRM-Typ, Zielgruppe, Leitfaden, Regeln). Nur lokal. "
+                     "Nur Angaben eintragen, die der Nutzer nennt – nichts erfinden.",
+        eingabe={"projekt_id": string("ID zum Ändern (leer = neues Projekt)"), "name": string("Projektname"),
+                 "crm": {"type": "string", "enum": ["hubspot", "gohighlevel", "close", "sonstiges", "keins"], "description": "CRM-System des Projekts"},
+                 "zielgruppe": string("Zielgruppe/Entscheider"), "leitfaden": string("Gesprächsleitfaden"),
+                 "regeln": string("Regeln, z. B. Anrufzeiten, No-Gos"), "notiz": string("Notiz")},
+        pflicht=[], berechtigung="lokal", ausfuehren=_projekt_speichern, warten=10.0, zeitlimit=30.0))
+    register(Faehigkeit(
+        name="projekt_liste", titel="Projekte anzeigen", beschreibung="Zeigt die angelegten Vertriebsprojekte. Nur lesend.",
+        eingabe={}, pflicht=[], berechtigung="lesen", ausfuehren=_projekt_liste, warten=10.0, zeitlimit=30.0))
+    register(Faehigkeit(
+        name="anruf_erfassen", titel="Anruf-Ergebnis speichern",
+        beschreibung="Speichert das Ergebnis eines Anrufs (aus dem Diktat des Nutzers) lokal: Lead, Ergebnis, Notiz, nächster "
+                     "Schritt, Frist. Mit nächstem Schritt entsteht ein Auftrag im Kanban. Schreibt NICHT ins CRM und sendet "
+                     "nichts – CRM-Notiz und Follow-up-Mail laufen danach über die freigabepflichtigen Werkzeuge. Nur "
+                     "gesagte Angaben eintragen; Telefonstatus „unklar“, wenn nicht genannt.",
+        eingabe={"projekt": string("Projektname oder ID (leer, wenn es nur ein Projekt gibt)"),
+                 "lead_name": string("Name des Gesprächspartners"), "firma": string("Firma"), "rolle": string("Rolle/Titel"),
+                 "telefon_status": {"type": "string", "enum": ["geschaeftlich", "privat", "unklar"], "description": "Art der Nummer"},
+                 "kontakt_quelle": string("Woher stammen die Kontaktdaten"),
+                 "ergebnis": {"type": "string", "enum": ["nicht_erreicht", "falsche_nummer", "kein_interesse", "rueckruf", "interesse", "termin", "abschluss"], "description": "Ergebnis des Anrufs"},
+                 "notiz": string("Notiz zum Gespräch"), "naechster_schritt": string("Was passiert als Nächstes"),
+                 "frist": string("JJJJ-MM-TT für den nächsten Schritt"), "dauer_s": {"type": "integer", "description": "Gesprächsdauer in Sekunden (optional)"}},
+        pflicht=["ergebnis"], berechtigung="lokal", ausfuehren=_anruf_erfassen, warten=10.0, zeitlimit=60.0))
+    register(Faehigkeit(
+        name="anruf_karte", titel="Mini-Karte vor dem Anruf",
+        beschreibung="Karte vor einem Anruf: Projekt-Leitfaden, bisherige Anrufe zum Lead, offene Follow-ups, Hinweise zur "
+                     "Telefonnummer. Nur lokale Daten; sagt, ob noch eine CRM-Abfrage nötig ist. Nur lesend.",
+        eingabe={"projekt": string("Projektname oder ID"), "name": string("Name des Leads"), "firma": string("Firma des Leads")},
+        pflicht=[], berechtigung="lesen", ausfuehren=_anruf_karte, warten=10.0, zeitlimit=30.0))
+    register(Faehigkeit(
+        name="anruf_kennzahlen", titel="Anruf-Kennzahlen",
+        beschreibung="Gemessene Zahlen aus den gespeicherten Anrufen (Gespräche, Ergebnisse, Termine pro 100, offene "
+                     "CRM-Einträge, fällige Follow-ups). Nennt Quelle und Stand; fehlende Daten bleiben leer. Nur lesend.",
+        eingabe={"tage": {"type": "integer", "description": "Zeitraum in Tagen (Standard 7)"}, "projekt": string("Projekt (optional)")},
+        pflicht=[], berechtigung="lesen", ausfuehren=_anruf_kennzahlen, warten=10.0, zeitlimit=30.0))
+    register(Faehigkeit(
+        name="anruf_crm_status", titel="CRM-Status eines Anrufs setzen",
+        beschreibung="Hält fest, wie weit der CRM-Eintrag zu einem gespeicherten Anruf ist (offen, vorschau, geschrieben, "
+                     "nicht_noetig). Ändert nur Jarvis-Daten, nicht das CRM.",
+        eingabe={"anruf_id": string("ID des Anrufs, z. B. C-1a2b3c4d5e"),
+                 "status": {"type": "string", "enum": ["offen", "vorschau", "geschrieben", "nicht_noetig"], "description": "CRM-Status"}},
+        pflicht=["anruf_id", "status"], berechtigung="lokal", ausfuehren=_anruf_crm_status, warten=10.0, zeitlimit=30.0))
     from . import cloud_skills
 
     register(Faehigkeit(

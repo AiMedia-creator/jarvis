@@ -246,3 +246,19 @@ button.cc-row:hover { border-color: #B9CBE0; }
 @media (prefers-reduced-motion: reduce) {
   .cc *, .cc-work, .cc-side { animation: none !important; transition: none !important; }
 }
+
+/* --- Anrufe (Anruf-Copilot) --- */
+.cc-calls { display: grid; gap: 16px; }
+.cc-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin: 0; padding: 0; list-style: none; }
+.cc-kpis li { display: grid; gap: 2px; padding: 12px 14px; border: 1px solid var(--cc-line, #d6dde6); border-radius: 8px; background: var(--cc-card, #fff); }
+.cc-kpis strong { font: 600 26px/1.1 ui-monospace, SFMono-Regular, Menlo, monospace; color: #172B43; }
+.cc-kpis span { font-size: 12px; color: #4a5a6b; }
+.cc-source { margin: 0; font-size: 12px; color: #4a5a6b; }
+.cc-projects, .cc-call-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.cc-call { padding: 10px 12px; border: 1px solid var(--cc-line, #d6dde6); border-left: 4px solid #3F78B5; border-radius: 6px; }
+.cc-call.res-termin, .cc-call.res-abschluss { border-left-color: #1f7a4d; }
+.cc-call.res-kein_interesse, .cc-call.res-falsche_nummer { border-left-color: #8a96a3; }
+.cc-call-main { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.cc-call-res { margin-left: auto; font-size: 12px; font-weight: 600; color: #172B43; }
+.cc-call-next, .cc-call-note, .cc-call-meta { margin: 4px 0 0; font-size: 13px; }
+.cc-call-meta { font-size: 12px; color: #4a5a6b; }
