@@ -1,0 +1,15 @@
+{
+  "server": {
+    "dateien": {
+      "befehl": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/Users/DEIN_NAME/Documents"],
+      "nur_lesen": ["read_file", "read_text_file", "list_directory", "search_files", "get_file_info"],
+      "aus": true
+    },
+    "beispiel_http": {
+      "url": "https://mcp.example.com/mcp",
+      "header": {"Authorization": "Bearer DEIN_TOKEN"},
+      "nur_lesen": false,
+      "aus": true
+    }
+  }
+}

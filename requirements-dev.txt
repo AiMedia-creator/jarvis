@@ -1,0 +1,5 @@
+# Offline-Regressionstests
+pytest>=8,<10
+pytest-asyncio>=1,<2
+# Optional für die vorhandenen Browser-/Oberflächen-Tests:
+# playwright (danach: python -m playwright install chromium)

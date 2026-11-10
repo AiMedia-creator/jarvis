@@ -1,0 +1,10 @@
+[
+  {"id":"berlin-01","name":"Berlin · Sektor 01","city_id":"berlin","kind":"mock"},
+  {"id":"london-01","name":"London · Sektor 01","city_id":"london","kind":"mock"},
+  {"id":"new-york-01","name":"New York · Sektor 01","city_id":"new-york","kind":"mock"},
+  {"id":"tokyo-01","name":"Tokio · Sektor 01","city_id":"tokyo","kind":"mock"},
+  {"id":"dubai-01","name":"Dubai · Sektor 01","city_id":"dubai","kind":"mock"},
+  {"id":"singapore-01","name":"Singapur · Sektor 01","city_id":"singapore","kind":"mock"},
+  {"id":"sydney-01","name":"Sydney · Sektor 01","city_id":"sydney","kind":"mock"},
+  {"id":"cape-town-01","name":"Kapstadt · Sektor 01","city_id":"cape-town","kind":"mock"}
+]

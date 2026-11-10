@@ -1,0 +1,37 @@
+server:
+  address: ${JARVIS_BIND:127.0.0.1}
+  port: ${PORT:8080}
+  shutdown: graceful
+spring:
+  application.name: jarvis-java-backend
+  codec.max-in-memory-size: 16KB
+  webflux.multipart.max-in-memory-size: 1MB
+management:
+  endpoints.web.exposure.include: health,info,metrics
+  endpoint.health.show-details: never
+jarvis:
+  bind: ${JARVIS_BIND:127.0.0.1}
+  demo: ${JARVIS_DEMO:true}
+  auth-required: ${JARVIS_AUTH_REQUIRED:false}
+  session-token: ${JARVIS_SESSION_TOKEN:}
+  allowed-origins: ${JARVIS_ALLOWED_ORIGINS:http://localhost:8080,http://127.0.0.1:8080,http://localhost:4173,http://127.0.0.1:4173}
+  static-dir: ${JARVIS_STATIC_DIR:../dashboard/dist}
+  cameras-file: ${JARVIS_CAMERAS_FILE:}
+  max-rooms: ${JARVIS_MAX_ROOMS:8}
+  max-clients-per-room: ${JARVIS_MAX_CLIENTS:8}
+  max-output-frames: ${JARVIS_MAX_OUTPUT_FRAMES:64}
+  max-input-chars: ${JARVIS_MAX_INPUT_CHARS:8000}
+  max-session-minutes: ${JARVIS_MAX_SESSION_MINUTES:480}
+  generation-backend: ${JARVIS_GENERATION_BACKEND:python}
+  bridge-url: ${JARVIS_BRIDGE_URL:http://127.0.0.1:8766}
+  bridge-token: ${JARVIS_BRIDGE_TOKEN:}
+  vad-threshold: ${JARVIS_VAD_THRESHOLD:492}
+  anthropic-model: ${ANTHROPIC_MODEL:claude-sonnet-5-5}
+  anthropic-url: ${ANTHROPIC_URL:https://api.anthropic.com/v1/messages}
+  elevenlabs-voice-id: ${ELEVENLABS_VOICE_ID:21m00Tcm4TlvDq8ikWAM}
+  elevenlabs-model: ${ELEVENLABS_MODEL:eleven_multilingual_v2}
+  elevenlabs-url: ${ELEVENLABS_URL:https://api.elevenlabs.io/v1/text-to-speech}
+  stt-url: ${JARVIS_STT_URL:}
+  stt-api-key: ${JARVIS_STT_API_KEY:}
+# TLS-Proxy bei Loopback-Bind: --jarvis.secure-cookie=true
+# Nichtlokaler Bind aktiviert Secure-Cookies standardmäßig.

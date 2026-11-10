@@ -1,0 +1,25 @@
+# Gehirn
+anthropic>=0.109.1,<1
+aiohttp>=3.14.1,<4
+requests
+defusedxml
+# Agenten-Orchestrierung (Graph + lokaler SQLite-Checkpointer), Versionen gepinnt
+langgraph==1.2.16
+langgraph-checkpoint-sqlite==3.1.2
+# Gmail, Kalender, Drive, Aufgaben, Kontakte
+google-api-python-client
+google-auth-oauthlib
+# Stimme (Ausgabe)
+edge-tts
+pygame
+# Ohr (Mikrofon + Spracherkennung, laeuft lokal und kostenlos)
+sounddevice
+numpy
+faster-whisper
+# Telegram-Kanaele lesen
+telethon
+# Akustische Aktivierung (Klatschen/Schnipsen, nur nach Opt-in): lokales YAMNet + Menüleiste
+ai-edge-litert==2.3.0
+rumps==0.4.0
+# Aus OpenJarvis uebernommen: PDF lesen
+pypdf>=5,<7

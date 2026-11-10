@@ -1,0 +1,12 @@
+# Browser-Dashboard + vorhandene Tools; kein Zugriff auf Audio-Hardware nötig.
+anthropic==0.109.1
+aiohttp==3.14.1
+requests>=2.32,<3
+defusedxml>=0.7,<1
+google-api-python-client>=2.190,<3
+google-auth-oauthlib>=1.2,<2
+edge-tts>=7.2,<8
+telethon>=1.42,<2
+# Lokale PCM/Whisper-Transkription für den Java-Audiokanal (Modell erst bei Benutzung).
+numpy>=1.26,<3
+faster-whisper>=1.2,<2
