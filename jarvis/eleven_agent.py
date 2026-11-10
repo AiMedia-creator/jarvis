@@ -63,10 +63,22 @@ def _web_suche(frage: str) -> str:
 
 
 def _merken(notiz: str) -> str:
-    folder = config.data_dir() / "memories"
-    folder.mkdir(exist_ok=True)
-    with open(folder / "notizen.md", "a", encoding="utf-8") as f:
-        f.write(f"- {datetime.date.today():%d.%m.%Y}: {notiz.strip()}\n")
+    """Dauerhafte Notiz aus dem Echtzeit-Gespräch – ins selbe Gedächtnis (SQLite) wie alle anderen Kanäle.
+
+    Früher landete sie nur in ~/.jarvis/memories/notizen.md und war danach weder über wissen_suchen noch im
+    Dashboard auffindbar.
+    """
+    from . import memory
+
+    try:
+        saved = memory.store().remember(notiz, "note", "echtzeit", client="sprachkern")
+    except ValueError:
+        return "Nicht gespeichert: leer, zu lang oder enthält Zugangsdaten."
+    if saved.get("duplicate"):
+        return "Das war bereits gespeichert."
+    if saved.get("conflicts"):
+        return ("Gespeichert, aber es widerspricht einer älteren Notiz: " + saved["conflicts"][0]["content"][:160]
+                + " – frag kurz nach, welche gilt.")
     return "Gemerkt."
 
 
@@ -146,6 +158,15 @@ def _call(method: str, path: str, **kw) -> dict:
             detail = r.text
         if r.status_code == 401:
             global auth_problem, _auth_key
+            # ElevenLabs meldet auch FEHLENDE RECHTE eines gueltigen Schluessels als 401 (detail.status=missing_permissions).
+            missing = isinstance(detail, dict) and detail.get("status") == "missing_permissions"
+            import re as _re
+            perm = _re.search(r"permission (\w+)", str(detail.get("message") or "")) if missing else None
+            if missing:
+                auth_problem, _auth_key = f"Berechtigung fehlt ({perm.group(1) if perm else 'ElevenLabs Agents'})", _key()
+                raise RuntimeError("Der ElevenLabs-Schluessel ist gueltig, aber ihm fehlt die Berechtigung "
+                                   f"{perm.group(1) if perm else 'ElevenLabs Agents'}. In elevenlabs.io unter Settings > API Keys "
+                                   "'ElevenLabs Agents' auf Schreiben und 'Voices' auf Lesen stellen.")
             auth_problem, _auth_key = "Schluessel ungueltig (401)", _key()
             raise RuntimeError("ElevenLabs lehnt den Schluessel ab (401). Neuen Schluessel erstellen und Berechtigung "
                                "'ElevenLabs Agents' erlauben.")

@@ -763,6 +763,7 @@ class Agent:
                     jobs_mod.finish(job, jobs_mod.CANCELLED)
                 raise Cancelled()  # während des Wartens auf die Sperre überholt
             self.cancel_event.clear()
+            self._repair_history()
             self._trim_context()
             turn_start = len(self.messages)
             self._partial = []
@@ -780,6 +781,12 @@ class Agent:
             # Jede Nutzeraeusserung ist ein neuer Zug: Freigaben aus diesem Zug gelten nur fuer Vorlagen aus frueheren.
             self._turn_no = approvals.next_turn(self.conversation_id)
             telemetry.start_job(job["id"], self.conversation_id, self.model, job.get("art", "vordergrund"))
+            # Äußerung sofort sichern (Status pending): Ein Abbruch von Verbindung oder Prozess verliert sie nicht.
+            episode_id = None
+            try:
+                episode_id = self.memory_store.begin_turn(self.conversation_id, text, kanal=str(self.channel or "text"))["id"]
+            except Exception:
+                episode_id = None  # Gedächtnis darf eine Antwort nie verhindern; Rückfall: Speichern am Ende
             status, err = jobs_mod.COMPLETED, None
             final_answer = None
             try:
@@ -816,6 +823,10 @@ class Agent:
                 # SQLite receives both completed and interrupted turns. The
                 # store redacts secrets before persistence and bounds inputs.
                 try:
+                    if episode_id is not None and len(self.messages) <= turn_start:
+                        # Kein Verlaufseintrag entstanden (früher Abbruch/Fehler): Wortlaut bleibt, Status wird ehrlich.
+                        self.memory_store.finish_turn(episode_id, "", "interrupted" if status == jobs_mod.CANCELLED
+                                                      else "failed" if status == jobs_mod.FAILED else "completed")
                     if len(self.messages) > turn_start:
                         user_text = text
                         assistant_text = ""
@@ -825,14 +836,16 @@ class Agent:
                                 assistant_text = content if isinstance(content, str) else " ".join(getattr(x, "text", "") for x in content if getattr(x, "type", "") == "text")
                                 break
                         outcome = "completed" if status == jobs_mod.COMPLETED else "interrupted" if status == jobs_mod.CANCELLED else "failed"
-                        self.memory_store.record_turn(self.conversation_id, user_text, assistant_text, outcome)
+                        if episode_id is None or not self.memory_store.finish_turn(episode_id, assistant_text, outcome):
+                            episode_id = self.memory_store.record_turn(self.conversation_id, user_text, assistant_text, outcome,
+                                                                       kanal=str(self.channel or "text"))["id"]
                         saved_by_model = any(
                             getattr(block, "type", "") == "tool_use" and getattr(block, "name", "") in {"wissen_speichern", "memory"}
                             for msg in self.messages[turn_start:] if msg.get("role") == "assistant"
                             and not isinstance(msg.get("content"), str) for block in msg["content"])
                         asked_back = "?" in assistant_text  # Jarvis fragt nach (z. B. Widerspruch): erst Antwort abwarten
                         if not saved_by_model and not asked_back and status == jobs_mod.COMPLETED:
-                            self._extract_explicit_fact(user_text)
+                            self._extract_explicit_fact(user_text, episode_id or "")
                 except Exception:
                     # Memory must never make an otherwise valid response fail.
                     pass
@@ -842,6 +855,51 @@ class Agent:
                 telemetry.add(job["id"], "runden", self._rounds)
                 telemetry.finish_job(job["id"], job["status"] if job["status"] == jobs_mod.WAITING else status, err)
                 self._external_cancel = None
+
+    def _repair_history(self) -> int:
+        """Verwaiste Werkzeugaufrufe aus dem Verlauf entfernen, bevor der nächste Zug beginnt.
+
+        Steht ein `tool_use` ohne direkt folgendes `tool_result` im Verlauf (z. B. nach einem Abbruch mitten im
+        Werkzeuglauf oder einem wiederhergestellten Stand), lehnt die API JEDEN weiteren Zug dieses Gesprächs mit 400
+        ab – das Gespräch wirkt dann „tot“, bis man es zurücksetzt. Hier wird nur das defekte Paar entfernt.
+        """
+        def blocks(msg, kind):
+            content = msg.get("content")
+            if isinstance(content, str) or content is None:
+                return []
+            out = []
+            for b in content:
+                typ = b.get("type") if isinstance(b, dict) else getattr(b, "type", "")
+                if typ == kind:
+                    out.append((b.get("id") or b.get("tool_use_id")) if isinstance(b, dict)
+                               else (getattr(b, "id", None) or getattr(b, "tool_use_id", None)))
+            return out
+
+        removed, i = 0, 0
+        while i < len(self.messages):
+            msg = self.messages[i]
+            uses = blocks(msg, "tool_use") if msg.get("role") == "assistant" else []
+            results = blocks(msg, "tool_result") if msg.get("role") == "user" else []
+            if uses:
+                nxt = self.messages[i + 1] if i + 1 < len(self.messages) else None
+                answered = set(blocks(nxt, "tool_result")) if nxt is not None and nxt.get("role") == "user" else set()
+                if not set(uses) <= answered:
+                    del self.messages[i:i + (2 if answered else 1)]
+                    removed += 1
+                    continue
+            elif results:
+                prev = self.messages[i - 1] if i > 0 else None
+                asked = set(blocks(prev, "tool_use")) if prev is not None and prev.get("role") == "assistant" else set()
+                if not set(results) <= asked:
+                    del self.messages[i]
+                    removed += 1
+                    continue
+            i += 1
+        if removed:
+            from . import events
+
+            events.log("verlauf_repariert", gespraech=self.conversation_id, entfernt=removed)
+        return removed
 
     def _trim_context(self) -> None:
         """Nur komplette historische Nutzerzüge entfernen; Tool-use/result-Paare bleiben gültig.
@@ -868,7 +926,7 @@ class Agent:
 
             events.log("kontext_gekuerzt", konversation=self.conversation_id, entfernt=before - len(self.messages))
 
-    def _extract_explicit_fact(self, text: str) -> None:
+    def _extract_explicit_fact(self, text: str, origin_episode: str = "") -> None:
         """Only persist unmistakable first-person assertions, never questions/tools."""
         raw = str(text).strip()
         if not raw or "?" in raw or len(raw) > 8000:
@@ -886,7 +944,8 @@ class Agent:
         if candidate and len(candidate) >= 3:
             try:
                 # Nur Rückfallebene: bei Widerspruch nichts automatisch ablegen – das Modell fragt nach.
-                self.memory_store.remember(candidate, category, "explicit_user_assertion", skip_on_conflict=True)
+                self.memory_store.remember(candidate, category, "explicit_user_assertion", skip_on_conflict=True,
+                                           origin_episode=origin_episode)
             except ValueError:
                 pass
 

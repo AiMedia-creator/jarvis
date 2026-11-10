@@ -283,6 +283,11 @@ def kennzahlen(tage: int = 7, projekt_id: str | None = None) -> dict:
         "termine": termine, "termine_pro_100": round(termine * 100 / total, 1) if total else None,
         "crm_offen": sum(1 for c in calls if c["crm_status"] == "offen" and c["ergebnis"] not in ("nicht_erreicht", "falsche_nummer")),
         "followups_faellig": len(offene), "mit_naechstem_schritt": sum(1 for c in calls if c["naechster_schritt"]),
+        # Gespräche, die eine Fortsetzung verlangen (Rückruf/Interesse), aber keinen nächsten Schritt haben.
+        "ohne_naechsten_schritt": sum(1 for c in calls if c["ergebnis"] in ("rueckruf", "interesse") and not c["naechster_schritt"]),
+        # Nummer privat oder ungeklärt: Aus einer vorhandenen Nummer folgt keine Einwilligung in Werbeanrufe.
+        "telefon_ungeklaert": sum(1 for c in calls if c["telefon_status"] != "geschaeftlich"),
+        "ohne_kontaktquelle": sum(1 for c in calls if not c.get("kontakt_quelle")),
         "mittlere_dauer_s": round(sum(dauern) / len(dauern)) if dauern else None,
         "quelle": "gespeicherte Anrufe in memory.sqlite3 (nur von Jarvis erfasste Gespräche)",
         "stand": datetime.datetime.now().isoformat(timespec="seconds"),

@@ -271,6 +271,63 @@ public final class ApiController {
         return forward("POST", "/internal/faehigkeiten/" + id + "/" + aktion, Map.of());
     }
 
+    // --- Agenten-Center, Verbindungen, Gedächtnis-Center, fortlaufendes Transkript ---
+
+    private static final java.util.Set<String> MEMORY_ACTIONS =
+            java.util.Set.of("speichern", "aendern", "bestaetigen", "loeschen", "archiv_loeschen", "index_neu");
+
+    /** Echte Jobs je Agent mit Schritten, Zeiten, Ergebnis und Rollenabdeckung (nur lesend). */
+    @GetMapping("/api/agenten")
+    public Mono<ResponseEntity<?>> agenten(ServerWebExchange exchange) {
+        if (!sessions.authorized(exchange)) return Mono.just(ResponseEntity.status(401).body(Map.of("fehler", "Session erforderlich.")));
+        return forward("GET", "/internal/agenten", null);
+    }
+
+    /** Tatsächlicher Zustand der Dienste (live geprüfte Rechte, keine Zugangsdaten). */
+    @GetMapping("/api/verbindungen")
+    public Mono<ResponseEntity<?>> verbindungen(@RequestParam(defaultValue = "false") boolean neu, ServerWebExchange exchange) {
+        if (!sessions.authorized(exchange)) return Mono.just(ResponseEntity.status(401).body(Map.of("fehler", "Session erforderlich.")));
+        return forward("GET", "/internal/verbindungen" + (neu ? "?neu=1" : ""), null);
+    }
+
+    @GetMapping("/api/gedaechtnis")
+    public Mono<ResponseEntity<?>> gedaechtnis(@RequestParam(defaultValue = "") String q, @RequestParam(defaultValue = "60") int limit,
+                                               ServerWebExchange exchange) {
+        if (!sessions.authorized(exchange)) return Mono.just(ResponseEntity.status(401).body(Map.of("fehler", "Session erforderlich.")));
+        return forward("GET", "/internal/gedaechtnis?q=" + PythonBridgeProvider.query(Protocol.safe(q, 400))
+                + "&limit=" + Math.max(1, Math.min(200, limit)), null);
+    }
+
+    @GetMapping("/api/gedaechtnis/export")
+    public Mono<ResponseEntity<?>> gedaechtnisExport(ServerWebExchange exchange) {
+        if (!sessions.authorized(exchange)) return Mono.just(ResponseEntity.status(401).body(Map.of("fehler", "Session erforderlich.")));
+        return forward("GET", "/internal/gedaechtnis/export", null);
+    }
+
+    @GetMapping("/api/gedaechtnis/verlauf/{id}")
+    public Mono<ResponseEntity<?>> gedaechtnisVerlauf(@PathVariable String id, ServerWebExchange exchange) {
+        if (!sessions.authorized(exchange)) return Mono.just(ResponseEntity.status(401).body(Map.of("fehler", "Session erforderlich.")));
+        if (!ID.matcher(id).matches()) return Mono.just(ResponseEntity.badRequest().body(Map.of("fehler", "Ungültige ID.")));
+        return forward("GET", "/internal/gedaechtnis/verlauf/" + id, null);
+    }
+
+    /** Korrigieren, bestätigen, löschen: nur der Nutzer im Dashboard (Session, Origin, X-Jarvis). */
+    @PostMapping("/api/gedaechtnis/{aktion}")
+    public Mono<ResponseEntity<?>> gedaechtnisAktion(@PathVariable String aktion, @RequestBody(required = false) Mono<Map<String, Object>> body,
+                                                     ServerWebExchange exchange) {
+        if (!writeAllowed(exchange)) return Mono.just(ResponseEntity.status(403).body(Map.of("fehler", "Session, Origin und X-Jarvis erforderlich.")));
+        if (!MEMORY_ACTIONS.contains(aktion)) return Mono.just(ResponseEntity.badRequest().body(Map.of("fehler", "Ungültige Aktion.")));
+        return (body == null ? Mono.<Map<String, Object>>empty() : body).defaultIfEmpty(Map.of())
+                .flatMap(value -> forward("POST", "/internal/gedaechtnis/" + aktion, value));
+    }
+
+    /** Erkannte Äußerung aus dem Echtzeit-Sprachmodus ins Gesprächsarchiv (nur Text). */
+    @PostMapping("/api/transkript")
+    public Mono<ResponseEntity<?>> transkript(@RequestBody Mono<Map<String, Object>> body, ServerWebExchange exchange) {
+        if (!writeAllowed(exchange)) return Mono.just(ResponseEntity.status(403).body(Map.of("fehler", "Session, Origin und X-Jarvis erforderlich.")));
+        return body.flatMap(value -> forward("POST", "/internal/transkript", value));
+    }
+
     @GetMapping("/api/logs/{art}")
     public Mono<ResponseEntity<?>> logs(@PathVariable String art, ServerWebExchange exchange) {
         if (!sessions.authorized(exchange)) return Mono.just(ResponseEntity.status(401).body(Map.of("fehler", "Session erforderlich.")));

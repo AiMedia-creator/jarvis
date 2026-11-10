@@ -184,6 +184,28 @@ class MemoryStore:
                                 ("consent", "TEXT NOT NULL DEFAULT 'explicit'"), ("conflicts_with", "TEXT NOT NULL DEFAULT ''")):
                 if column not in columns:
                     c.execute(f"ALTER TABLE facts ADD COLUMN {column} {ddl}")
+            # Gedächtnis-Center: Bestätigung, Herkunft (Client, Ursprungs-Gespräch) und Versionsverlauf.
+            columns = self._columns(c, "facts")
+            for column, ddl in (("confirmed_at", "TEXT"), ("origin_episode", "TEXT NOT NULL DEFAULT ''"),
+                                ("client", "TEXT NOT NULL DEFAULT ''")):
+                if column not in columns:
+                    c.execute(f"ALTER TABLE facts ADD COLUMN {column} {ddl}")
+            # Gesprächsarchiv: Kanal (text, echtzeit, mcp …), letzte Änderung und Client-Referenz gegen Doppelte.
+            columns = self._columns(c, "episodes")
+            for column, ddl in (("kanal", "TEXT NOT NULL DEFAULT 'text'"), ("updated_at", "TEXT"), ("client_ref", "TEXT")):
+                if column not in columns:
+                    c.execute(f"ALTER TABLE episodes ADD COLUMN {column} {ddl}")
+            c.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS fact_versions (
+                  id TEXT PRIMARY KEY, fact_id TEXT NOT NULL, content TEXT NOT NULL, category TEXT NOT NULL,
+                  source TEXT NOT NULL, changed_at TEXT NOT NULL, reason TEXT NOT NULL,
+                  owner_scope TEXT NOT NULL, installation_scope TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS fact_versions_fact ON fact_versions(fact_id, changed_at DESC);
+                CREATE UNIQUE INDEX IF NOT EXISTS episodes_client_ref ON episodes(client_ref) WHERE client_ref IS NOT NULL;
+                """
+            )
             columns = self._columns(c, "memory_events")
             if "owner_scope" not in columns:
                 c.execute(f"ALTER TABLE memory_events ADD COLUMN owner_scope TEXT NOT NULL DEFAULT '{_LEGACY_SCOPE}'")
@@ -280,7 +302,7 @@ class MemoryStore:
 
     def remember(self, content: str, category: str = "note", source: str = "user", *,
                  valid_until: str | None = None, confidence: float = 1.0, consent: str = "explicit",
-                 skip_on_conflict: bool = False) -> dict:
+                 skip_on_conflict: bool = False, client: str = "", origin_episode: str = "") -> dict:
         """Speichert eine Erinnerung mit Quelle, Scope, Gültigkeit, Konfidenz und Einwilligung.
 
         Identischer Inhalt wird nicht doppelt gespeichert. Ähnliche, aber abweichende Aussagen derselben Kategorie
@@ -330,9 +352,11 @@ class MemoryStore:
             conflict_ids = ",".join(item["id"] for item in conflicts)
             c.execute(
                 """INSERT INTO facts (id,content,category,source,owner_scope,installation_scope,created_at,updated_at,
-                   vector,valid_until,confidence,consent,conflicts_with) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   vector,valid_until,confidence,consent,conflicts_with,client,origin_episode)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (ident, content, category, str(source)[:80], self.owner_scope, self.installation_scope, now, now,
-                 json.dumps(vector), valid_until, confidence, consent, conflict_ids),
+                 json.dumps(vector), valid_until, confidence, consent, conflict_ids,
+                 _redact(str(client or ""))[:80], str(origin_episode or "")[:64]),
             )
             for item in conflicts:
                 c.execute(
@@ -347,7 +371,8 @@ class MemoryStore:
         return {"id": ident, "content": content, "category": category, "updated_at": now, "source": str(source)[:80],
                 "valid_until": valid_until, "confidence": confidence, "consent": consent, "conflicts": conflicts}
 
-    def record_turn(self, conversation_id: str, user_text: str, assistant_text: str, status: str = "completed") -> dict:
+    def record_turn(self, conversation_id: str, user_text: str, assistant_text: str, status: str = "completed",
+                    kanal: str = "text") -> dict:
         uid, aid = _redact(str(user_text))[:_MAX_USER], _redact(str(assistant_text))[:_MAX_ASSISTANT]
         if not uid.strip() and not aid.strip():
             raise ValueError("conversation turn is empty")
@@ -355,25 +380,309 @@ class MemoryStore:
         conv = str(conversation_id or "haupt")[:200]
         with self._lock, self._connect() as c:
             c.execute("BEGIN IMMEDIATE")
-            c.execute(
-                "INSERT INTO episodes VALUES (?,?,?,?,?,?,?,?,?)",
-                (
-                    ident,
-                    conv,
-                    uid,
-                    aid,
-                    str(status or "completed")[:40],
-                    self.owner_scope,
-                    self.installation_scope,
-                    now,
-                    json.dumps(_vector(uid + " " + aid)),
-                ),
-            )
-            c.execute("INSERT INTO episodes_fts(id,conversation_id,user_text,assistant_text) VALUES (?,?,?,?)", (ident, conv, uid, aid))
+            self._insert_episode(c, ident, conv, uid, aid, str(status or "completed")[:40], now, kanal, None)
             self._event(c, "episode_recorded", ident, "conversation", {"conversation_id": conv, "status": status})
             c.execute("COMMIT")
             self._invalidate()
         return {"id": ident, "conversation_id": conv, "user_text": uid, "assistant_text": aid, "status": str(status), "created_at": now}
+
+    # --- Gesprächsarchiv fortlaufend: erst die Äußerung sichern, dann die Antwort ergänzen -------------------
+
+    def _insert_episode(self, c: sqlite3.Connection, ident: str, conv: str, user: str, assistant: str, status: str,
+                        now: str, kanal: str, client_ref: str | None) -> None:
+        c.execute(
+            """INSERT INTO episodes (id,conversation_id,user_text,assistant_text,status,owner_scope,installation_scope,
+               created_at,vector,kanal,updated_at,client_ref) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (ident, conv, user, assistant, status, self.owner_scope, self.installation_scope, now,
+             json.dumps(_vector(user + " " + assistant)), str(kanal or "text")[:24], now, client_ref),
+        )
+        c.execute("INSERT INTO episodes_fts(id,conversation_id,user_text,assistant_text) VALUES (?,?,?,?)",
+                  (ident, conv, user, assistant))
+
+    def begin_turn(self, conversation_id: str, user_text: str, kanal: str = "text", client_ref: str | None = None) -> dict:
+        """Sichert die Nutzeräußerung SOFORT (Status pending), bevor Jarvis antwortet.
+
+        Bricht die Verbindung oder der Prozess danach ab, bleibt der Wortlaut erhalten. `client_ref` macht den
+        Aufruf wiederholbar: dieselbe Referenz legt nichts doppelt an.
+        """
+        uid = _redact(str(user_text))[:_MAX_USER]
+        if not uid.strip():
+            raise ValueError("utterance is empty")
+        conv, now, ident = str(conversation_id or "haupt")[:200], _now(), _id()
+        ref = str(client_ref)[:80] if client_ref else None
+        with self._lock, self._connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            if ref:
+                row = c.execute("SELECT id,status,created_at FROM episodes WHERE client_ref=? AND owner_scope=? AND installation_scope=?",
+                                (ref, self.owner_scope, self.installation_scope)).fetchone()
+                if row:
+                    c.execute("ROLLBACK")
+                    return {"id": row["id"], "status": row["status"], "created_at": row["created_at"], "duplicate": True}
+            self._insert_episode(c, ident, conv, uid, "", "pending", now, kanal, ref)
+            self._event(c, "utterance_saved", ident, "conversation", {"conversation_id": conv, "kanal": kanal})
+            c.execute("COMMIT")
+            self._invalidate()
+        return {"id": ident, "status": "pending", "created_at": now, "duplicate": False}
+
+    def finish_turn(self, episode_id: str, assistant_text: str, status: str = "completed", append: bool = False) -> bool:
+        """Ergänzt die Antwort zu einer gesicherten Äußerung und setzt den endgültigen Status."""
+        aid = _redact(str(assistant_text or ""))[:_MAX_ASSISTANT]
+        with self._lock, self._connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute("SELECT conversation_id,user_text,assistant_text FROM episodes WHERE id=? AND owner_scope=? AND installation_scope=?",
+                            (str(episode_id), self.owner_scope, self.installation_scope)).fetchone()
+            if row is None:
+                c.execute("ROLLBACK")
+                return False
+            if append and row["assistant_text"]:
+                aid = (row["assistant_text"] + " " + aid).strip()[:_MAX_ASSISTANT]
+            c.execute("UPDATE episodes SET assistant_text=?, status=?, updated_at=?, vector=? WHERE id=?",
+                      (aid, str(status or "completed")[:40], _now(), json.dumps(_vector(row["user_text"] + " " + aid)), str(episode_id)))
+            c.execute("DELETE FROM episodes_fts WHERE id=?", (str(episode_id),))
+            c.execute("INSERT INTO episodes_fts(id,conversation_id,user_text,assistant_text) VALUES (?,?,?,?)",
+                      (str(episode_id), row["conversation_id"], row["user_text"], aid))
+            self._event(c, "episode_recorded", str(episode_id), "conversation",
+                        {"conversation_id": row["conversation_id"], "status": status})
+            c.execute("COMMIT")
+            self._invalidate()
+        return True
+
+    def log_utterance(self, conversation_id: str, role: str, text: str, kanal: str = "echtzeit",
+                      client_ref: str | None = None) -> dict:
+        """Eine einzelne erkannte Äußerung (z. B. aus dem Echtzeit-Sprachmodus) fortlaufend ablegen.
+
+        Nutzeräußerungen eröffnen einen Archiv-Eintrag; die nächste Jarvis-Äußerung desselben Gesprächs schließt ihn.
+        """
+        role = "user" if role == "user" else "agent"
+        if role == "user":
+            # Ältere offene Äußerungen desselben Gesprächs bekamen keine Antwort mehr (Reinreden): Wortlaut bleibt,
+            # Status wird "interrupted" – sonst stünden sie bis zum nächsten Neustart als ausstehend da.
+            with self._lock, self._connect() as c:
+                c.execute("UPDATE episodes SET status='interrupted', updated_at=? WHERE conversation_id=? AND kanal=? "
+                          "AND status='pending' AND owner_scope=? AND installation_scope=? AND (client_ref IS NULL OR client_ref<>?)",
+                          (_now(), str(conversation_id or "haupt")[:200], str(kanal)[:24], self.owner_scope,
+                           self.installation_scope, str(client_ref or "")[:80]))
+            saved = self.begin_turn(conversation_id, text, kanal, client_ref)
+            return {"id": saved["id"], "status": "gespeichert", "duplicate": saved.get("duplicate", False)}
+        clean = _redact(str(text or ""))[:_MAX_ASSISTANT]
+        if not clean.strip():
+            raise ValueError("utterance is empty")
+        conv = str(conversation_id or "haupt")[:200]
+        ref = str(client_ref)[:80] if client_ref else None
+        with self._lock, self._connect() as c:
+            if ref and c.execute("SELECT 1 FROM memory_meta WHERE key=?", ("ref:" + ref,)).fetchone():
+                return {"id": None, "status": "gespeichert", "duplicate": True}
+            row = c.execute("""SELECT id FROM episodes WHERE conversation_id=? AND kanal=? AND status='pending'
+                               AND owner_scope=? AND installation_scope=? ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+                            (conv, str(kanal)[:24], self.owner_scope, self.installation_scope)).fetchone()
+        if row is not None:
+            self.finish_turn(row["id"], clean, "completed", append=True)
+            ident = row["id"]
+        else:  # Jarvis spricht ohne vorherige Nutzeräußerung (Begrüßung) oder setzt nach einem Werkzeug fort
+            with self._lock, self._connect() as c:
+                # Nur an einen Eintrag der LAUFENDEN Sitzung anhängen (letzte Änderung < 3 min), nie an alte Gespräche.
+                recent = datetime.fromtimestamp(time.time() - 180, timezone.utc).isoformat(timespec="seconds")
+                last = c.execute("""SELECT id FROM episodes WHERE conversation_id=? AND kanal=? AND owner_scope=?
+                                    AND installation_scope=? AND COALESCE(updated_at, created_at)>=?
+                                    ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+                                 (conv, str(kanal)[:24], self.owner_scope, self.installation_scope, recent)).fetchone()
+            if last is not None:
+                self.finish_turn(last["id"], clean, "completed", append=True)
+                ident = last["id"]
+            else:
+                ident = self.record_turn(conv, "", clean, "completed", kanal=kanal)["id"]
+        if ref:
+            with self._lock, self._connect() as c:
+                c.execute("INSERT OR IGNORE INTO memory_meta(key,value) VALUES (?,?)", ("ref:" + ref, _now()))
+        return {"id": ident, "status": "gespeichert", "duplicate": False}
+
+    def close_pending(self, older_than_s: float = 0.0) -> int:
+        """Beim Start: Äußerungen, deren Antwort nie ankam, als unterbrochen markieren (Wortlaut bleibt)."""
+        limit = datetime.fromtimestamp(time.time() - max(0.0, older_than_s), timezone.utc).isoformat(timespec="seconds")
+        with self._lock, self._connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            cur = c.execute("UPDATE episodes SET status='interrupted', updated_at=? WHERE status='pending' AND created_at<=? "
+                            "AND owner_scope=? AND installation_scope=?", (_now(), limit, self.owner_scope, self.installation_scope))
+            if cur.rowcount:
+                self._event(c, "pending_closed", None, "conversation", {"anzahl": cur.rowcount})
+            c.execute("COMMIT")
+            self._invalidate()
+            return cur.rowcount
+
+    def delete_episode(self, ident: str) -> dict:
+        """Löscht einen Archiv-Eintrag samt Suchindex und den daraus abgeleiteten Erinnerungen."""
+        ident = str(ident)
+        with self._lock, self._connect() as c:
+            row = c.execute("SELECT id FROM episodes WHERE id=? AND owner_scope=? AND installation_scope=?",
+                            (ident, self.owner_scope, self.installation_scope)).fetchone()
+            derived = [r["id"] for r in c.execute("SELECT id FROM facts WHERE origin_episode=? AND owner_scope=? AND installation_scope=?",
+                                                  (ident, self.owner_scope, self.installation_scope)).fetchall()]
+        if row is None:
+            return {"deleted": False, "abgeleitet": 0}
+        for fact_id in derived:
+            self.forget_report(fact_id)
+        with self._lock, self._connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute("DELETE FROM episodes_fts WHERE id=?", (ident,))
+            c.execute("DELETE FROM episodes WHERE id=? AND owner_scope=? AND installation_scope=?",
+                      (ident, self.owner_scope, self.installation_scope))
+            self._event(c, "episode_deleted", ident, "conversation", {"abgeleitet": len(derived)})
+            c.execute("COMMIT")
+            self._invalidate()
+        return {"deleted": True, "abgeleitet": len(derived)}
+
+    # --- Dauerhaftes Wissen: korrigieren mit Versionsverlauf, bestätigen, exportieren -------------------------
+
+    def _fact_row(self, c: sqlite3.Connection, ident: str):
+        return c.execute("SELECT * FROM facts WHERE id=? AND owner_scope=? AND installation_scope=?",
+                         (str(ident), self.owner_scope, self.installation_scope)).fetchone()
+
+    def update_fact(self, ident: str, content: str, category: str | None = None, source: str = "user",
+                    reason: str = "korrigiert") -> dict:
+        """Korrigiert eine Erinnerung. Die alte Fassung bleibt im Versionsverlauf – nichts wird still überschrieben."""
+        content = str(content or "").strip()
+        if not content or len(content) > _MAX_FACT:
+            raise ValueError("note must be non-empty and at most 8000 characters")
+        if _contains_secret(content):
+            raise ValueError("secrets, credentials, codes and payment data cannot be stored")
+        now = _now()
+        with self._lock, self._connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = self._fact_row(c, ident)
+            if row is None:
+                c.execute("ROLLBACK")
+                raise KeyError(ident)
+            new_category = _CATEGORY_ALIASES.get(str(category or row["category"]).strip().lower(),
+                                                 _redact(str(category or row["category"]))[:120])
+            if row["content"] == content and row["category"] == new_category:
+                c.execute("ROLLBACK")
+                return {"id": str(ident), "unveraendert": True}
+            c.execute("""INSERT INTO fact_versions (id,fact_id,content,category,source,changed_at,reason,owner_scope,installation_scope)
+                         VALUES (?,?,?,?,?,?,?,?,?)""",
+                      (_id(), str(ident), row["content"], row["category"], row["source"], now, str(reason)[:80],
+                       self.owner_scope, self.installation_scope))
+            c.execute("UPDATE facts SET content=?, category=?, source=?, updated_at=?, vector=?, confirmed_at=NULL WHERE id=?",
+                      (content, new_category, str(source)[:80], now, json.dumps(_vector(content)), str(ident)))
+            c.execute("DELETE FROM facts_fts WHERE id=?", (str(ident),))
+            c.execute("INSERT INTO facts_fts(id,content,category) VALUES (?,?,?)", (str(ident), content, new_category))
+            self._event(c, "fact_updated", str(ident), new_category, {"source": source, "reason": reason})
+            c.execute("COMMIT")
+            self._invalidate()
+        return {"id": str(ident), "content": content, "category": new_category, "updated_at": now, "unveraendert": False}
+
+    def confirm(self, ident: str) -> dict:
+        """Der Nutzer bestätigt eine Erinnerung: volle Konfidenz, Zeitpunkt wird festgehalten."""
+        now = _now()
+        with self._lock, self._connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            row = self._fact_row(c, ident)
+            if row is None:
+                c.execute("ROLLBACK")
+                raise KeyError(ident)
+            c.execute("UPDATE facts SET confirmed_at=?, confidence=1.0 WHERE id=?", (now, str(ident)))
+            self._event(c, "fact_confirmed", str(ident), row["category"], {})
+            c.execute("COMMIT")
+            self._invalidate()
+        return {"id": str(ident), "confirmed_at": now}
+
+    def history(self, ident: str) -> dict:
+        """Aktuelle Fassung, frühere Fassungen und Ereignisse einer Erinnerung (neueste zuerst)."""
+        with self._lock, self._connect() as c:
+            row = self._fact_row(c, ident)
+            versions = c.execute("""SELECT content,category,source,changed_at,reason FROM fact_versions
+                                    WHERE fact_id=? AND owner_scope=? AND installation_scope=? ORDER BY changed_at DESC, rowid DESC""",
+                                 (str(ident), self.owner_scope, self.installation_scope)).fetchall()
+            events = c.execute("""SELECT event_type,created_at,metadata FROM memory_events WHERE entity_id=? AND owner_scope=?
+                                  AND installation_scope=? ORDER BY created_at DESC LIMIT 30""",
+                               (str(ident), self.owner_scope, self.installation_scope)).fetchall()
+        if row is None:
+            raise KeyError(ident)
+        return {"aktuell": self._fact_public(row), "versionen": [dict(v) for v in versions],
+                "ereignisse": [{"typ": e["event_type"], "zeit": e["created_at"]} for e in events]}
+
+    @staticmethod
+    def _fact_public(row: sqlite3.Row) -> dict:
+        keys = row.keys()
+        return {"id": str(row["id"]), "content": row["content"], "category": row["category"], "source": row["source"],
+                "created_at": row["created_at"], "updated_at": row["updated_at"], "valid_until": row["valid_until"],
+                "confidence": row["confidence"], "consent": row["consent"],
+                "confirmed_at": row["confirmed_at"] if "confirmed_at" in keys else None,
+                "client": row["client"] if "client" in keys else "",
+                "origin_episode": row["origin_episode"] if "origin_episode" in keys else "",
+                "conflicts": [x for x in str(row["conflicts_with"] or "").split(",") if x],
+                "gueltig": _is_valid(row["valid_until"])}
+
+    def center(self, query: str = "", limit: int = 50) -> dict:
+        """Daten fürs Gedächtnis-Center: Wissen und Archiv getrennt, mit Herkunft, Zeitstempeln und Speicherstatus."""
+        limit = max(1, min(200, int(limit)))
+        found = self.search(query, min(_MAX_LIMIT, limit), strict=True) if str(query).strip() else None
+        scope = (self.owner_scope, self.installation_scope)
+        with self._lock, self._connect() as c:
+            if found is None:
+                fact_rows = c.execute("SELECT * FROM facts WHERE owner_scope=? AND installation_scope=? ORDER BY updated_at DESC LIMIT ?",
+                                      (*scope, limit)).fetchall()
+                ep_rows = c.execute("""SELECT id,conversation_id,user_text,assistant_text,status,created_at,kanal,updated_at FROM episodes
+                                       WHERE owner_scope=? AND installation_scope=? ORDER BY created_at DESC, rowid DESC LIMIT ?""",
+                                    (*scope, limit)).fetchall()
+            else:
+                def by_ids(table: str, ids: list[str], cols: str):
+                    if not ids:
+                        return []
+                    marks = ",".join("?" * len(ids))
+                    rows = {r["id"]: r for r in c.execute(
+                        f"SELECT {cols} FROM {table} WHERE id IN ({marks}) AND owner_scope=? AND installation_scope=?",
+                        (*ids, *scope)).fetchall()}
+                    return [rows[i] for i in ids if i in rows]
+                fact_rows = by_ids("facts", [f["id"] for f in found["facts"]], "*")
+                ep_rows = by_ids("episodes", [e["id"] for e in found["episodes"]],
+                                 "id,conversation_id,user_text,assistant_text,status,created_at,kanal,updated_at")
+            versions = dict(c.execute("SELECT fact_id, COUNT(*) FROM fact_versions WHERE owner_scope=? AND installation_scope=? GROUP BY fact_id",
+                                      scope).fetchall())
+            by_status = dict(c.execute("SELECT status, COUNT(*) FROM episodes WHERE owner_scope=? AND installation_scope=? GROUP BY status",
+                                       scope).fetchall())
+            by_kanal = dict(c.execute("SELECT kanal, COUNT(*) FROM episodes WHERE owner_scope=? AND installation_scope=? GROUP BY kanal",
+                                      scope).fetchall())
+            first = c.execute("SELECT MIN(created_at) FROM episodes WHERE owner_scope=? AND installation_scope=?", scope).fetchone()[0]
+        facts = [dict(self._fact_public(r), versionen=int(versions.get(r["id"], 0))) for r in fact_rows]
+        return {"suche": str(query), "wissen": facts, "archiv": [dict(r) for r in ep_rows],
+                "notizdateien": _note_files(str(query)),
+                "stand": _now(),
+                "zahlen": {**self.stats(), "archiv_nach_status": by_status, "archiv_nach_kanal": by_kanal,
+                           "ausstehend": int(by_status.get("pending", 0)), "fehlgeschlagen": int(by_status.get("failed", 0)),
+                           "widersprueche": sum(1 for f in facts if f["conflicts"]), "archiv_seit": first},
+                "ereignisse": self.events(20)}
+
+    def export(self) -> dict:
+        """Vollständiger Export des eigenen Bereichs (Wissen, Versionen, Archiv) – ohne Vektoren."""
+        scope = (self.owner_scope, self.installation_scope)
+        with self._lock, self._connect() as c:
+            facts = [self._fact_public(r) for r in c.execute(
+                "SELECT * FROM facts WHERE owner_scope=? AND installation_scope=? ORDER BY created_at", scope).fetchall()]
+            versions = [dict(r) for r in c.execute(
+                """SELECT fact_id,content,category,source,changed_at,reason FROM fact_versions
+                   WHERE owner_scope=? AND installation_scope=? ORDER BY changed_at""", scope).fetchall()]
+            episodes = [dict(r) for r in c.execute(
+                """SELECT id,conversation_id,user_text,assistant_text,status,created_at,kanal,updated_at FROM episodes
+                   WHERE owner_scope=? AND installation_scope=? ORDER BY created_at""", scope).fetchall()]
+        return {"format": "jarvis-gedaechtnis/1", "exportiert": _now(), "quelle": str(self.path),
+                "wissen": facts, "versionen": versions, "archiv": episodes}
+
+    def rebuild_index(self) -> dict:
+        """Suchindex aus den Originaldaten neu aufbauen – der Index ist nie die einzige Kopie."""
+        scope = (self.owner_scope, self.installation_scope)
+        with self._lock, self._connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute("DELETE FROM facts_fts")
+            c.execute("DELETE FROM episodes_fts")
+            c.execute("INSERT INTO facts_fts(id,content,category) SELECT id,content,category FROM facts")
+            c.execute("INSERT INTO episodes_fts(id,conversation_id,user_text,assistant_text) "
+                      "SELECT id,conversation_id,user_text,assistant_text FROM episodes")
+            n_f = c.execute("SELECT COUNT(*) FROM facts WHERE owner_scope=? AND installation_scope=?", scope).fetchone()[0]
+            n_e = c.execute("SELECT COUNT(*) FROM episodes WHERE owner_scope=? AND installation_scope=?", scope).fetchone()[0]
+            self._event(c, "index_rebuilt", None, "index", {"wissen": n_f, "archiv": n_e})
+            c.execute("COMMIT")
+            self._invalidate()
+        return {"wissen": n_f, "archiv": n_e}
 
     def forget_report(self, ident: str) -> dict:
         """Löscht genau eine Erinnerung und sagt ehrlich, was davon technisch noch übrig sein kann."""
@@ -407,12 +716,15 @@ class MemoryStore:
                 "DELETE FROM facts WHERE id=? AND owner_scope=? AND installation_scope=?",
                 (ident, self.owner_scope, self.installation_scope),
             )
+            # Auch frühere Fassungen verschwinden – sonst bliebe der gelöschte Inhalt im Versionsverlauf stehen.
+            c.execute("DELETE FROM fact_versions WHERE fact_id=? AND owner_scope=? AND installation_scope=?",
+                      (ident, self.owner_scope, self.installation_scope))
             self._event(c, "fact_deleted", ident, fact["category"], {})
             c.execute("COMMIT")
             self._invalidate()
             return True
 
-    def _search_rows(self, c: sqlite3.Connection, query: str, limit: int) -> tuple[list[dict], list[dict]]:
+    def _search_rows(self, c: sqlite3.Connection, query: str, limit: int, strict: bool = False) -> tuple[list[dict], list[dict]]:
         qterms = _terms(query)
         qvec = _vector(query)
         facts, episodes = [], []
@@ -431,7 +743,7 @@ class MemoryStore:
                 ).fetchall()
             except sqlite3.OperationalError:
                 fact_rows = []
-        if not fact_rows:
+        if not fact_rows and not (strict and qterms):  # strict: ohne Treffer nichts „Ähnliches“ unterschieben
             fact_rows = c.execute(
                 """SELECT id,content,category,updated_at,vector,source,valid_until,confidence,conflicts_with,0 AS rank FROM facts
                    WHERE owner_scope=? AND installation_scope=? ORDER BY updated_at DESC LIMIT ?""",
@@ -449,7 +761,7 @@ class MemoryStore:
                 ).fetchall()
             except sqlite3.OperationalError:
                 ep_rows = []
-        if not ep_rows:
+        if not ep_rows and not (strict and qterms):
             ep_rows = c.execute(
                 """SELECT id,conversation_id,user_text,assistant_text,status,created_at,vector,0 AS rank
                    FROM episodes WHERE owner_scope=? AND installation_scope=? ORDER BY created_at DESC LIMIT ?""",
@@ -506,9 +818,10 @@ class MemoryStore:
                              (*STANDING, self.owner_scope, self.installation_scope, max(1, min(100, limit)))).fetchall()
         return [dict(r) for r in rows if _is_valid(r["valid_until"])]
 
-    def search(self, query: str = "", limit: int = 12) -> dict:
+    def search(self, query: str = "", limit: int = 12, strict: bool = False) -> dict:
+        """strict=True liefert nur echte Volltext-Treffer (Gedächtnis-Center, MCP); sonst bei Leere die neuesten Einträge."""
         limit = max(1, min(_MAX_LIMIT, int(limit)))
-        key = (str(query), limit)
+        key = (str(query), limit, bool(strict))
         with self._lock, self._connect() as c:
             revision = self._revision(c)
             if revision != self._last_revision:
@@ -517,7 +830,7 @@ class MemoryStore:
             if key in self._cache:
                 self._cache.move_to_end(key)
                 return json.loads(json.dumps(self._cache[key]))
-            facts, episodes = self._search_rows(c, str(query or ""), limit)
+            facts, episodes = self._search_rows(c, str(query or ""), limit, strict)
             result = {"facts": facts, "episodes": episodes}
             self._cache[key] = result
             while len(self._cache) > 128:
@@ -574,6 +887,36 @@ class MemoryStore:
         if conversation_id is not None:
             result["episodes"] = self.recent_episodes(conversation_id, limit)
         return result
+
+
+def _note_files(query: str = "") -> list[dict]:
+    """Arbeitsnotizen, die das Modell über sein Datei-Werkzeug `memory` in ~/.jarvis/memories ablegt.
+
+    Sie liegen NICHT in SQLite und sind über wissen_suchen nicht auffindbar – das Gedächtnis-Center zeigt sie
+    deshalb ausdrücklich als eigenen Bereich (nur lesend, Auszug geschwärzt).
+    """
+    root = (config.data_dir() / "memories").expanduser()
+    out: list[dict] = []
+    try:
+        base = root.resolve(strict=True)
+        files = sorted(p for p in base.rglob("*") if p.is_file() and not p.name.startswith("."))[:100]
+    except OSError:
+        return out
+    needle = [t for t in _terms(query)]
+    for path in files:
+        try:
+            if not path.resolve().is_relative_to(base):
+                continue
+            stat = path.stat()
+            text = path.read_text(encoding="utf-8", errors="replace")[:4000]
+        except OSError:
+            continue
+        if needle and not any(t in text.lower() or t in path.name.lower() for t in needle):
+            continue
+        out.append({"name": str(path.relative_to(base)), "groesse": stat.st_size,
+                    "geaendert": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(timespec="seconds"),
+                    "auszug": _redact(text)[:600]})
+    return out
 
 
 # Name used by integration notes; it is intentionally a normal Python class.

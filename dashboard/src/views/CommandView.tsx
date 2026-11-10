@@ -6,14 +6,18 @@ import { CallsPanel } from "../command/CallsPanel";
 import { ContentPanel } from "../command/ContentPanel";
 import { ApprovalsPanel } from "../command/ApprovalsPanel";
 import { AgendaPanel } from "../command/AgendaPanel";
-import { AgentsPanel, AutomationsPanel, stateLabel } from "../command/AutomationPanels";
+import { AutomationsPanel, stateLabel } from "../command/AutomationPanels";
+import { AgentCenter, AgentsAtWork } from "../command/AgentCenter";
+import { MemoryCenter } from "../command/MemoryCenter";
+import { ConnectionsPanel, connectionClass } from "../command/ConnectionsPanel";
+import { SkillPlatform } from "../command/SkillPlatform";
 import { EventDetail } from "../command/EventDetail";
 import { CommandCenter } from "../command/CommandCenter";
 import { Telemetry } from "../command/telemetry";
 import { LiveCamera, useBusEvents, type CameraInfo } from "../command/LiveCamera";
-import type { RealtimeSession } from "../command/realtime";
+import type { RealtimeSession, SaveState } from "../command/realtime";
 import { DEFAULT_PREFS, type VoicePrefs } from "../command/SettingsDialog";
-import type { CallOverview, ContentOverview, CapabilityRun, Platform, Settings } from "../command/api";
+import type { AgentCenterData, AgentRole, CallOverview, Connections, ContentOverview, CapabilityRun, Platform, Settings } from "../command/api";
 import { Icon } from "../command/icons";
 import type { ContentView } from "../view/intent";
 import type { AudioEngine } from "../audio";
@@ -24,29 +28,39 @@ const CalendarPanel = lazy(() => import("../command/CalendarPanel"));
 const MapboxWorld = lazy(() => import("../world/MapboxWorld"));
 
 export type CommandSection =
-  | "uebersicht" | "auftraege" | "kalender" | "termin" | "anrufe" | "content" | "agenten" | "automatisierungen" | "welt" | "gespraech" | "freigaben";
+  | "uebersicht" | "auftraege" | "kalender" | "termin" | "anrufe" | "content" | "agenten" | "automatisierungen" | "gedaechtnis"
+  | "verbindungen" | "welt" | "gespraech" | "freigaben";
 type NavItem = { id: CommandSection; label: string; icon: string };
-const SECTIONS: NavItem[] = [
-  { id: "uebersicht", label: "Übersicht", icon: "overview" },
-  { id: "auftraege", label: "Aufträge", icon: "orders" },
-  { id: "kalender", label: "Kalender", icon: "calendar" },
-  { id: "anrufe", label: "Anrufe", icon: "phone" },
-  { id: "content", label: "Content", icon: "news" },
-  { id: "agenten", label: "Agenten", icon: "agents" },
-  { id: "automatisierungen", label: "Automatisierungen", icon: "automation" },
-  { id: "welt", label: "World View", icon: "world" },
-  { id: "gespraech", label: "Command Center", icon: "chat" },
-  { id: "freigaben", label: "Freigaben", icon: "approvals" },
+/** Navigation in vier ruhigen Gruppen: erst der Tag, dann Umsatz, dann das Agenten-System, zuletzt Einrichtung. */
+const NAV: { title: string; items: NavItem[] }[] = [
+  { title: "Heute", items: [
+    { id: "uebersicht", label: "Übersicht", icon: "overview" },
+    { id: "gespraech", label: "Command Center", icon: "chat" },
+    { id: "freigaben", label: "Freigaben", icon: "approvals" },
+  ] },
+  { title: "Arbeit", items: [
+    { id: "anrufe", label: "Vertrieb", icon: "phone" },
+    { id: "content", label: "Content", icon: "news" },
+    { id: "auftraege", label: "Aufträge", icon: "orders" },
+    { id: "kalender", label: "Kalender", icon: "calendar" },
+  ] },
+  { title: "Agenten-System", items: [
+    { id: "agenten", label: "Agenten-Center", icon: "agents" },
+    { id: "automatisierungen", label: "Skills und Automationen", icon: "automation" },
+    { id: "gedaechtnis", label: "Gedächtnis", icon: "memory" },
+    { id: "verbindungen", label: "Verbindungen", icon: "link" },
+  ] },
 ];
 const TITLES: Record<CommandSection, string> = {
-  uebersicht: "Übersicht", auftraege: "Aufträge", kalender: "Kalender", termin: "Termin", anrufe: "Anrufe", content: "Content", agenten: "Agenten",
-  automatisierungen: "Automatisierungen", welt: "World View", gespraech: "Command Center", freigaben: "Freigaben",
+  uebersicht: "Übersicht", auftraege: "Aufträge", kalender: "Kalender", termin: "Termin", anrufe: "Vertrieb", content: "Content", agenten: "Agenten-Center",
+  automatisierungen: "Skills und Automationen", gedaechtnis: "Gedächtnis", verbindungen: "Verbindungen und Einrichtung",
+  welt: "World View", gespraech: "Command Center", freigaben: "Freigaben",
 };
-const MORE: { id: ContentView; label: string; icon: string }[] = [
+const MORE: { id: ContentView | "welt"; label: string; icon: string }[] = [
+  { id: "welt", label: "World View", icon: "world" },
   { id: "news", label: "Nachrichten", icon: "news" },
   { id: "market", label: "Märkte", icon: "market" },
   { id: "cameras", label: "Kameras", icon: "camera" },
-  { id: "memory", label: "Gedächtnis", icon: "memory" },
   { id: "ops", label: "System", icon: "system" },
 ];
 const DEFAULT_COLUMNS: Column[] = [
@@ -58,8 +72,9 @@ const COLUMN_TITLES: Partial<Record<OrderStatus, string>> = { freigabe: "Prüfun
 const PRIO_ORDER = ["kritisch", "hoch", "normal", "niedrig"];
 
 const ALIASES: [RegExp, CommandSection][] = [
-  [/auftr|kanban|board/, "auftraege"], [/kalender|termin/, "kalender"], [/agenda/, "kalender"], [/anruf|telefon|vertrieb|lead/, "anrufe"], [/content|video|hook|tiktok|reel|shorts/, "content"], [/agent/, "agenten"],
-  [/automat|ablauf|abläuf|workflow|n8n/, "automatisierungen"], [/welt|karte|world|map/, "welt"],
+  [/auftr|kanban|board/, "auftraege"], [/kalender|termin/, "kalender"], [/agenda/, "kalender"], [/anruf|telefon|vertrieb|lead|pipeline|follow/, "anrufe"], [/content|video|hook|tiktok|reel|shorts/, "content"], [/agent|job/, "agenten"],
+  [/automat|ablauf|abläuf|workflow|n8n|skill/, "automatisierungen"], [/ged[aä]chtnis|erinner|memory/, "gedaechtnis"],
+  [/verbind|einricht|integration|dienst/, "verbindungen"], [/welt|karte|world|map/, "welt"],
   [/gespr|chat|coach|command center|sprach/, "gespraech"], [/freigab/, "freigaben"], [/übersicht|uebersicht|start|home/, "uebersicht"],
 ];
 export function sectionFromQuery(query?: string): CommandSection {
@@ -94,6 +109,8 @@ export type WorkspaceProps = {
   muted?: boolean;
   onMutedChange?: (muted: boolean) => void;
   voiceMode?: "studio" | "echtzeit";
+  transcriptSave?: SaveState;
+  onRetryTranscripts?: () => void;
   onStartRealtime?: () => Promise<void>;
   onStopRealtime?: () => Promise<void>;
   getRealtime?: () => RealtimeSession | null;
@@ -106,7 +123,7 @@ export default function CommandView({
   query, section: forced, worldQuery, role, connected, onAsk, onView,
   transcripts = [], audio = null, micOn = false, onMicChange = () => undefined, onLog = () => undefined, onStop = () => undefined,
   telemetry: givenTelemetry, muted = false, onMutedChange = () => undefined,
-  voiceMode = "studio", onStartRealtime = async () => undefined, onStopRealtime = async () => undefined, getRealtime = () => null,
+  voiceMode = "studio", transcriptSave, onRetryTranscripts = () => undefined, onStartRealtime = async () => undefined, onStopRealtime = async () => undefined, getRealtime = () => null,
   voicePrefs = DEFAULT_PREFS, onVoicePrefs = () => undefined, onReset = () => undefined,
 }: WorkspaceProps) {
   const [ownTelemetry] = useState(() => new Telemetry());
@@ -124,7 +141,6 @@ export default function CommandView({
   const [range, setRange] = useState<{ von: string; bis: string } | null>(null);
   const [automations, setAutomations] = useState<Automations | null>(null);
   const [automationError, setAutomationError] = useState<string | null>(null);
-  const [jobs, setJobs] = useState<Job[]>([]);
   const [offline, setOffline] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState<Selected>(null);
@@ -139,6 +155,12 @@ export default function CommandView({
   const [contentError, setContentError] = useState<string | null>(null);
   const [capError, setCapError] = useState<string | null>(null);
   const [capBusy, setCapBusy] = useState<string | null>(null);
+  const [agentData, setAgentData] = useState<AgentCenterData | null>(null);
+  const [agentError, setAgentError] = useState<string | null>(null);
+  const [focusJob, setFocusJob] = useState<string | null>(null);
+  const [connections, setConnections] = useState<Connections | null>(null);
+  const [connError, setConnError] = useState<string | null>(null);
+  const [connBusy, setConnBusy] = useState(false);
   const alive = useRef(true);
   useEffect(() => () => void (alive.current = false), []);
 
@@ -189,7 +211,7 @@ export default function CommandView({
       if (alive.current) setContentError(error instanceof Error ? error.message : "Content nicht erreichbar.");
     }
   }, []);
-  useEffect(() => { if (section === "content") void loadContent(); }, [section, loadContent]);
+  useEffect(() => { if (section === "content" || section === "uebersicht") void loadContent(); }, [section, loadContent]);
   const moveContent = useCallback(async (id: string, status: string) => {
     try { await api.setContentStatus(id, status); await loadContent(); }
     catch (error) { if (alive.current) setNotice(error instanceof Error ? error.message : "Status nicht geändert."); }
@@ -213,7 +235,7 @@ export default function CommandView({
     }
   }, [range]);
   const loadWork = useCallback(async () => {
-    const [a, j] = await Promise.allSettled([api.automations(), api.jobs()]);
+    const [a] = await Promise.allSettled([api.automations()]);
     if (!alive.current) return;
     if (a.status === "fulfilled" && Array.isArray(a.value?.agenten) && Array.isArray(a.value?.ablaeufe)) {
       setAutomations(a.value);
@@ -222,8 +244,33 @@ export default function CommandView({
     else setAutomationError(a.status === "rejected" && a.reason instanceof ApiError && a.reason.status === 404
       ? "Der Jarvis-Server ist älter als dieses Dashboard (Endpunkt /api/automations fehlt) – Jarvis neu starten."
       : "Status von Agenten und Automatisierungen nicht erreichbar.");
-    if (j.status === "fulfilled") setJobs(Array.isArray(j.value?.jobs) ? j.value.jobs : []);
+    try {
+      const data = await api.agentCenter();
+      if (!alive.current) return;
+      if (!Array.isArray(data?.jobs) || !Array.isArray(data?.rollen)) throw new Error("Unerwartete Antwort");
+      setAgentData(data);
+      setAgentError(null);
+    } catch (error) {
+      if (alive.current) setAgentError(error instanceof ApiError && error.status === 404
+        ? "Der Jarvis-Server ist älter als dieses Dashboard (/api/agenten fehlt) – Jarvis neu starten."
+        : "Agenten-Center nicht erreichbar – läuft der Jarvis-Server?");
+    }
   }, []);
+  const loadConnections = useCallback(async (fresh = false) => {
+    setConnBusy(true);
+    try {
+      const data = await api.connections(fresh);
+      if (!alive.current) return;
+      if (!Array.isArray(data?.verbindungen)) throw new Error("Unerwartete Antwort");
+      setConnections(data);
+      setConnError(null);
+    } catch (error) {
+      if (alive.current) setConnError(error instanceof ApiError && error.status === 404
+        ? "Der Jarvis-Server ist älter als dieses Dashboard (/api/verbindungen fehlt) – Jarvis neu starten."
+        : "Verbindungen nicht prüfbar – läuft der Jarvis-Server?");
+    } finally { if (alive.current) setConnBusy(false); }
+  }, []);
+  useEffect(() => { if (section === "verbindungen" || section === "uebersicht") void loadConnections(); }, [section, loadConnections]);
 
   const loadSettings = useCallback(async () => {
     try {
@@ -250,6 +297,26 @@ export default function CommandView({
     const result = await api.startCapability(name, args);
     if (result?.lauf) setPlatform((old) => old && { ...old, laeufe: [result.lauf, ...old.laeufe.filter((r) => r.id !== result.lauf.id)] });
   }, []);
+  /** Rolle/Skill als echten Job starten (Fähigkeit skill_starten): eigenes Gespräch, eigener Werkzeug-Rahmen. */
+  const startSkill = useCallback(async (skill: string, task: string) => {
+    await api.startCapability("skill_starten", { skill, auftrag: task });
+    void loadCapabilities();
+    void loadWork();
+  }, [loadCapabilities, loadWork]);
+  const startRole = useCallback(async (role: AgentRole, task: string) => {
+    if (!role.skill) throw new Error("Diese Rolle hat keine startbare Skill.");
+    await startSkill(role.skill, task);
+  }, [startSkill]);
+  const cancelJob = useCallback(async (id: string) => {
+    setCapBusy(id);
+    try {
+      const result = await api.cancelJob(id);
+      if (!result.abgebrochen) setNotice("Der Job war bereits beendet – nichts abgebrochen.");
+    } catch (error) {
+      setNotice(`Abbrechen nicht möglich: ${error instanceof Error ? error.message : "unbekannt"}`);
+    } finally { setCapBusy(null); void loadWork(); }
+  }, [loadWork]);
+  const openJob = useCallback((id?: string) => { setFocusJob(id ?? null); go("agenten"); }, [go]);
   const toggleSkill = useCallback(async (id: string, active: boolean) => {
     try {
       await api.setSkillActive(id, active);
@@ -267,8 +334,9 @@ export default function CommandView({
     } finally {
       setCapBusy(null);
       void loadCapabilities();
+      void loadWork();
     }
-  }, [loadCapabilities]);
+  }, [loadCapabilities, loadWork]);
   // Ereignis-Bus: Live-Kameras (Werkzeug live_kamera) und Job-Fortschritt, auch aus dem Echtzeit-Modus.
   const jobTimer = useRef<number | undefined>(undefined);
   useBusEvents(connected, (ev) => {
@@ -352,13 +420,9 @@ export default function CommandView({
   const today = dayKey(new Date(), tz);
   const active = board.orders.filter((o) => o.status !== "erledigt");
   const overdue = active.filter((o) => o.frist && o.frist < today);
-  const runningJobs = jobs.filter((j) => j.status === "RUNNING" || j.status === "WAITING_FOR_APPROVAL");
+  const runningJobs = (agentData?.jobs ?? []).filter((j) => j.status === "RUNNING" || j.status === "WAITING_FOR_APPROVAL");
   const troubled = (automations?.ablaeufe ?? []).filter((w) => w.aktiv && w.letzter_lauf && ["FAILED", "UNCLEAR"].includes(w.letzter_lauf.status));
-  const stats = useMemo(() => ({
-    termineHeute: (calendar?.termine ?? []).filter((e) =>
-      e.status !== "cancelled" && (e.beginn ? dayKey(new Date(e.beginn), tz) === today : e.datum_beginn === today)).length,
-    konflikte: calendar?.konflikte.length ?? 0,
-  }), [calendar, today, tz]);
+  const konflikte = calendar?.konflikte.length ?? 0;
   const next = (calendar?.termine ?? []).find((e) => e.status !== "cancelled" && e.beginn && new Date(e.beginn).getTime() > Date.now());
   const calendarOk = calendar?.status === "ok";
   const webcams = (automations?.integrationen.find((i) => i.id === "windy")?.status ?? null) as "bereit" | "nicht_eingerichtet" | null;
@@ -370,29 +434,54 @@ export default function CommandView({
     focus.push({ tone: "attn", text: `${calls.kennzahlen.followups_faellig} Follow-up${calls.kennzahlen.followups_faellig === 1 ? " ist" : "s sind"} nach Anrufen fällig – nächste Umsatzaktion.`, action: "Anrufe", to: "anrufe" });
   if (calls && calls.kennzahlen.crm_offen > 0)
     focus.push({ tone: "warn", text: `${calls.kennzahlen.crm_offen} Anruf${calls.kennzahlen.crm_offen === 1 ? "" : "e"} ohne CRM-Eintrag.`, action: "Anrufe", to: "anrufe" });
-  if (stats.konflikte) focus.push({ tone: "warn", text: `${stats.konflikte} Terminüberschneidung${stats.konflikte === 1 ? "" : "en"} im Kalender.`, action: "Kalender", to: "kalender" });
+  if (konflikte) focus.push({ tone: "warn", text: `${konflikte} Terminüberschneidung${konflikte === 1 ? "" : "en"} im Kalender.`, action: "Kalender", to: "kalender" });
   if (calendar && !calendarOk && calendar.status !== "demo")
     focus.push({ tone: "warn", text: `Kalender nicht verfügbar: ${calendar.hinweis || "unbekannter Grund"}`, action: "Details", to: "kalender" });
   for (const w of troubled) focus.push({ tone: "warn", text: `Ablauf „${w.name}“: letzter Lauf ${stateLabel(w.letzter_lauf!.status).toLowerCase()}${w.letzter_lauf!.fehler ? ` (${w.letzter_lauf!.fehler})` : ""}.`, action: "Ansehen", to: "automatisierungen" });
 
-  const dueCall = calls?.letzte_anrufe.filter((c) => c.naechster_schritt && c.frist && c.frist <= today)
-    .sort((a, b) => (a.frist ?? "").localeCompare(b.frist ?? ""))[0];
-  const nextSale: { title: string; reason: string; action: string; to: CommandSection } = dueCall
-    ? { title: dueCall.naechster_schritt, reason: `Fällig seit ${dueCall.frist} – ${dueCall.firma || dueCall.lead_name}, letztes Ergebnis: ${calls?.ergebnisse[dueCall.ergebnis] ?? dueCall.ergebnis}.`, action: "Zu den Anrufen", to: "anrufe" }
+  const dueCalls = (calls?.letzte_anrufe ?? []).filter((c) => c.naechster_schritt && c.frist && c.frist <= today)
+    .sort((a, b) => (a.frist ?? "").localeCompare(b.frist ?? ""));
+  const dueCall = dueCalls[0];
+  const callSource = "erfasste Anrufe (lokal)";
+  const nextSale: { title: string; reason: string; due: string; source: string; action: string; to: CommandSection } = dueCall
+    ? { title: dueCall.naechster_schritt, reason: `${dueCall.firma || dueCall.lead_name}: letztes Ergebnis „${calls?.ergebnisse[dueCall.ergebnis] ?? dueCall.ergebnis}“. Offene Zusagen zuerst – sie sind dem Abschluss am nächsten.`,
+        due: dueCall.frist < today ? `überfällig seit ${dueCall.frist}` : "heute fällig", source: callSource, action: "Follow-ups öffnen", to: "anrufe" }
     : calls && calls.kennzahlen.gespraeche === 0
-      ? { title: "Erstes Gespräch dokumentieren", reason: "Noch kein Anruf erfasst. Nach dem nächsten Gespräch kurz diktieren: Firma, Ergebnis, nächster Schritt – daraus entstehen Pipeline und Follow-ups.", action: "Anrufe öffnen", to: "anrufe" }
-      : { title: "Neue Gespräche anstoßen", reason: "Keine Follow-ups fällig. Die Pipeline braucht neue Kontakte – Anruf oder Nachricht an den nächsten Lead.", action: "Anrufe öffnen", to: "anrufe" };
-  const services = [
-    { name: "Kalender / Google", ok: calendarOk, text: calendarOk ? "verbunden" : calendar ? "abgelaufen oder getrennt – neu verbinden" : "lädt" },
-    ...((automations?.integrationen ?? []).filter((i) => ["hubspot", "elevenlabs", "github", "n8n"].includes(i.id))
-      .map((i) => ({ name: i.name, ok: i.status === "bereit", text: i.status === "bereit" ? "bereit" : i.status === "fehler" ? "Fehler" : "nicht eingerichtet" }))),
+      ? { title: "Erstes Gespräch führen und dokumentieren", reason: "Noch kein Anruf erfasst. Ohne Gespräche gibt es keine Pipeline – nach dem Anruf kurz diktieren: Firma, Ergebnis, nächster Schritt.",
+          due: "keine Frist hinterlegt", source: `${callSource}, ${calls.kennzahlen.zeitraum_tage} Tage`, action: "Anruf vorbereiten", to: "anrufe" }
+      : calls
+        ? { title: "Neue Gespräche anstoßen", reason: "Kein Follow-up ist fällig. Die Pipeline wächst nur durch neue Kontakte.", due: "keine Frist hinterlegt",
+            source: `${callSource}, ${calls.kennzahlen.zeitraum_tage} Tage`, action: "Vertrieb öffnen", to: "anrufe" }
+        : { title: "Vertriebsdaten laden …", reason: callsError ?? "Die Anrufdaten werden gelesen.", due: "–", source: callSource, action: "Vertrieb öffnen", to: "anrufe" };
+  // Wichtigste Aufgabe: feste, nachvollziehbare Reihenfolge – Freigabe vor Überfälligem vor Heutigem vor höchster Priorität.
+  const byPrio = (a: Order, b: Order) => PRIO_ORDER.indexOf(a.prioritaet) - PRIO_ORDER.indexOf(b.prioritaet) || (a.frist || "9").localeCompare(b.frist || "9");
+  const topOverdue = [...overdue].sort(byPrio)[0];
+  const topToday = active.filter((o) => o.frist === today).sort(byPrio)[0];
+  const topOpen = [...active].sort(byPrio)[0];
+  const topTask: { title: string; reason: string; action: string; run: () => void } | null = openApprovals.length
+    ? { title: openApprovals[0].vorschau?.titel || "Freigabe entscheiden", reason: `${openApprovals.length === 1 ? "Eine Vorlage wartet" : `${openApprovals.length} Vorlagen warten`} auf deine Entscheidung – ein Agent ist dadurch blockiert.`, action: "Freigabe prüfen", run: () => go("freigaben") }
+    : topOverdue ? { title: topOverdue.titel, reason: `Überfällig seit ${topOverdue.frist} · Priorität ${topOverdue.prioritaet}${overdue.length > 1 ? ` · insgesamt ${overdue.length} überfällig` : ""}.`, action: "Auftrag öffnen", run: () => { setSelected({ kind: "order", order: topOverdue }); go("auftraege"); } }
+    : topToday ? { title: topToday.titel, reason: `Heute fällig · Priorität ${topToday.prioritaet}.`, action: "Auftrag öffnen", run: () => { setSelected({ kind: "order", order: topToday }); go("auftraege"); } }
+    : topOpen ? { title: topOpen.titel, reason: `Höchste Priorität unter ${active.length} offenen Aufträgen${topOpen.frist ? ` · Frist ${topOpen.frist}` : " · ohne Frist"}.`, action: "Auftrag öffnen", run: () => { setSelected({ kind: "order", order: topOpen }); go("auftraege"); } }
+    : null;
+  const contentCount = (ids: string[]) => (contentData?.eintraege ?? []).filter((e) => ids.includes(e.status)).length;
+  const contentStages = [
+    { label: "In Arbeit", n: contentCount(["idee", "recherche", "hooks", "skript", "produktion"]) },
+    { label: "Wartet auf dich", n: contentCount(["review"]), attn: true },
+    { label: "Freigegeben / geplant", n: contentCount(["freigegeben", "geplant"]) },
+    { label: "Veröffentlicht", n: contentCount(["veroeffentlicht", "auswertung"]) },
   ];
+  const needsYou = (connections?.verbindungen ?? []).filter((c) => ["abgelaufen", "unvollstaendig", "fehler"].includes(c.zustand));
+  const connectedServices = (connections?.verbindungen ?? []).filter((c) => c.zustand === "verbunden");
+  const openSetup = (connections?.verbindungen ?? []).filter((c) => c.zustand === "nicht_eingerichtet");
 
   const navButton = (s: NavItem) => (
     <button key={s.id} type="button" className={section === s.id || (s.id === "kalender" && section === "termin") ? "active" : ""}
       aria-current={section === s.id ? "page" : undefined} onClick={() => go(s.id)}>
       <Icon name={s.icon} /> {s.label}
       {s.id === "freigaben" && openApprovals.length > 0 && <span className="cc-badge">{openApprovals.length}</span>}
+      {s.id === "agenten" && runningJobs.length > 0 && <span className="cc-badge live">{runningJobs.length}</span>}
+      {s.id === "verbindungen" && needsYou.length > 0 && <span className="cc-badge">{needsYou.length}</span>}
     </button>
   );
 
@@ -400,11 +489,19 @@ export default function CommandView({
     <section className="cc" aria-label="Jarvis Arbeitsbereich">
       <nav className={`cc-nav ${navOpen ? "open" : ""}`} aria-label="Hauptnavigation">
         <div className="cc-brand"><span className="cc-logo">J</span><span>Jarvis</span></div>
-        {SECTIONS.map(navButton)}
-        <div className="cc-nav-more">Weitere Ansichten</div>
-        {MORE.map((m) => (
-          <button key={m.id} type="button" onClick={() => { setNavOpen(false); onView(m.id); }}><Icon name={m.icon} /> {m.label}</button>
+        {NAV.map((group) => (
+          <div key={group.title} className="cc-nav-group" role="group" aria-label={group.title}>
+            <div className="cc-nav-more">{group.title}</div>
+            {group.items.map(navButton)}
+          </div>
         ))}
+        <div className="cc-nav-group" role="group" aria-label="Mehr">
+          <div className="cc-nav-more">Mehr</div>
+          {MORE.map((m) => (
+            <button key={m.id} type="button" className={m.id === "welt" && section === "welt" ? "active" : ""}
+              onClick={() => { if (m.id === "welt") go("welt"); else { setNavOpen(false); onView(m.id); } }}><Icon name={m.icon} /> {m.label}</button>
+          ))}
+        </div>
         <div className="cc-nav-foot">
           <span>{connected ? "Mit Jarvis verbunden" : "Keine Verbindung zu Jarvis"}</span>
         </div>
@@ -424,6 +521,12 @@ export default function CommandView({
           <div className="cc-pills">
             <span className={`cc-pill ${connected ? "ok" : "warn"}`}>{connected ? "Verbunden" : "Getrennt"}</span>
             <span className={`cc-pill ${calendarOk ? "ok" : "warn"}`}>Kalender {calendarOk ? "verbunden" : calendar ? "nicht verfügbar" : "lädt"}</span>
+            {transcriptSave && (voiceMode === "echtzeit" || transcriptSave.ausstehend + transcriptSave.fehlgeschlagen > 0) && (
+              transcriptSave.fehlgeschlagen > 0
+                ? <button type="button" className="cc-pill warn" title="Äußerungen liegen sicher in diesem Browser und werden erneut übertragen." onClick={onRetryTranscripts}>Transkript: {transcriptSave.fehlgeschlagen} fehlgeschlagen – erneut senden</button>
+                : <span className={`cc-pill ${transcriptSave.ausstehend ? "attn" : "ok"}`} title="Jede erkannte Äußerung wird sofort ins Gesprächsarchiv geschrieben (nur Text, kein Audio).">
+                    Transkript: {transcriptSave.gespeichert} gespeichert{transcriptSave.ausstehend ? ` · ${transcriptSave.ausstehend} ausstehend` : ""}</span>
+            )}
             {openApprovals.length > 0 && <button type="button" className="cc-pill attn" onClick={() => go("freigaben")}>{openApprovals.length} Freigaben</button>}
           </div>
         </header>
@@ -441,76 +544,100 @@ export default function CommandView({
                   <p>{new Date().toLocaleDateString("de-DE", { timeZone: tz, weekday: "long", day: "numeric", month: "long", year: "numeric" })}
                     {next && <> · Nächster Termin: <strong style={{ color: "var(--cc-text)" }}>{next.titel}</strong> um {timeRange(next, tz).split("–")[0]}</>}</p>
                 </div>
-                {canEdit && <button type="button" className="cc-btn accent" onClick={() => ask("Was steht heute an? Gib mir die drei wichtigsten Punkte.")}>Briefing von Jarvis</button>}
+                {canEdit && <button type="button" className="cc-btn" onClick={() => ask("Was steht heute an? Gib mir die drei wichtigsten Punkte.")}>Briefing von Jarvis</button>}
               </div>
-              <section className="cc-next" aria-label="Nächste Umsatzaktion">
-                <div>
-                  <span className="cc-next-label">Nächste Umsatzaktion</span>
-                  <h3>{nextSale.title}</h3>
-                  <p>{nextSale.reason}</p>
+              <div className="ov-hero">
+                <section className="ov-task" aria-label="Wichtigste Aufgabe heute">
+                  <span className="cc-next-label">Heute am wichtigsten</span>
+                  {topTask ? (
+                    <><h3>{topTask.title}</h3><p>{topTask.reason}</p>
+                      <div><button type="button" className="cc-btn accent" onClick={topTask.run}>{topTask.action}</button></div></>
+                  ) : (
+                    <><h3>Nichts Dringendes offen</h3><p>Keine Freigabe wartet, kein Auftrag ist offen. Lege einen Auftrag an oder sag Jarvis, was heute zählt.</p>
+                      <div><button type="button" className="cc-btn" onClick={() => go("auftraege")}>Auftrag anlegen</button></div></>
+                  )}
+                </section>
+                <section className="cc-next" aria-label="Nächste Umsatzaktion">
+                  <div>
+                    <span className="cc-next-label">Nächste Umsatzaktion</span>
+                    <h3>{nextSale.title}</h3>
+                    <p>{nextSale.reason}</p>
+                    <p className="ov-facts"><span>Frist: {nextSale.due}</span><span>Quelle: {nextSale.source}</span></p>
+                  </div>
+                  <button type="button" className="cc-btn accent" onClick={() => go(nextSale.to)}>{nextSale.action}</button>
+                </section>
+              </div>
+              {focus.length > 0 && (
+                <div className="cc-focus" aria-label="Braucht deine Aufmerksamkeit">
+                  {focus.slice(0, 4).map((f, i) => (
+                    <div key={i} className={`cc-focus-item ${f.tone}`}><p>{f.text}</p>
+                      <button type="button" className="cc-btn small" onClick={() => go(f.to)}>{f.action}</button></div>
+                  ))}
                 </div>
-                <button type="button" className="cc-btn accent" onClick={() => go(nextSale.to)}>{nextSale.action}</button>
-              </section>
-              <div className="cc-focus" aria-label="Braucht deine Aufmerksamkeit">
-                {focus.length === 0 ? (
-                  <div className="cc-focus-item"><p>Nichts wartet gerade auf dich – keine offenen Freigaben, nichts überfällig.</p></div>
-                ) : focus.map((f, i) => (
-                  <div key={i} className={`cc-focus-item ${f.tone}`}><p>{f.text}</p>
-                    <button type="button" className="cc-btn small" onClick={() => go(f.to)}>{f.action}</button></div>
-                ))}
-              </div>
-              <div className="cc-kpis">
-                <button type="button" onClick={() => go("kalender")}><strong>{calendarOk ? stats.termineHeute : "–"}</strong><span>Termine heute</span></button>
-                <button type="button" onClick={() => go("auftraege")}><strong>{active.length}</strong><span>Offene Aufträge</span></button>
-                <button type="button" onClick={() => go("auftraege")}><strong>{active.filter((o) => o.status === "in_arbeit").length}</strong><span>In Arbeit</span></button>
-                <button type="button" className={openApprovals.length ? "attn" : ""} onClick={() => go("freigaben")}><strong>{openApprovals.length}</strong><span>Freigaben offen</span></button>
-                <button type="button" className={overdue.length ? "warn" : ""} onClick={() => go("auftraege")}><strong>{overdue.length}</strong><span>Überfällig</span></button>
-                <button type="button" onClick={() => go("agenten")}><strong>{runningJobs.length}</strong><span>Laufende Arbeiten</span></button>
-              </div>
-              <div className="cc-grid">
+              )}
+              <div className="cc-grid ov-grid">
+                <AgentsAtWork data={agentData} error={agentError} onOpen={openJob} />
+                <section className="cc-card-box" aria-label="Anrufe und Follow-ups">
+                  <header><h3>Anrufe und Follow-ups</h3><button type="button" className="cc-link" onClick={() => go("anrufe")}>Vertrieb</button></header>
+                  {!calls ? <p className="cc-empty">{callsError ?? "Lädt …"}</p> : (
+                    <>
+                      <div className="ov-mini">
+                        <div className={dueCalls.length ? "attn" : ""}><strong>{dueCalls.length}</strong><span>Follow-ups fällig</span></div>
+                        <div className={calls.kennzahlen.ohne_naechsten_schritt ? "warn" : ""}><strong>{calls.kennzahlen.ohne_naechsten_schritt ?? "–"}</strong><span>ohne nächsten Schritt</span></div>
+                        <div><strong>{calls.kennzahlen.gespraeche}</strong><span>Gespräche · {calls.kennzahlen.zeitraum_tage} Tage</span></div>
+                      </div>
+                      {dueCalls.length === 0
+                        ? <p className="cc-empty">{calls.kennzahlen.gespraeche === 0 ? "Noch kein Anruf erfasst – deshalb sind keine Follow-ups fällig." : "Kein Follow-up fällig."}</p>
+                        : <ul className="cc-list">{dueCalls.slice(0, 3).map((c) => (
+                            <li key={c.id} className="cc-row"><span className="grow"><span className="title">{c.naechster_schritt}</span>
+                              <span className="meta">{c.firma || c.lead_name} · fällig {c.frist}</span></span></li>))}</ul>}
+                      <p className="cc-hint">Quelle: erfasste Anrufe, Stand {new Date(calls.kennzahlen.stand).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}.</p>
+                    </>
+                  )}
+                </section>
                 <section className="cc-card-box">
-                  <header><h3>Nächste Termine</h3><button type="button" className="cc-link" onClick={() => go("kalender")}>Kalender</button></header>
+                  <header><h3>Termine</h3><button type="button" className="cc-link" onClick={() => go("kalender")}>Kalender</button></header>
                   <AgendaPanel data={calendar} query={search} limitDays={2} canAsk={canEdit} onAsk={ask} onSelect={openEvent} />
                 </section>
-                <section className="cc-card-box">
-                  <header><h3>Offene Aufträge</h3><button type="button" className="cc-link" onClick={() => go("auftraege")}>Alle</button></header>
+                <section className="cc-card-box" aria-label="Content">
+                  <header><h3>Content</h3><button type="button" className="cc-link" onClick={() => go("content")}>Workflow</button></header>
+                  {!contentData ? <p className="cc-empty">{contentError ?? "Lädt …"}</p> : contentData.eintraege.length === 0 ? (
+                    <p className="cc-empty">Noch kein Content-Eintrag. Starte im Content-Workflow mit einem Thema – Jarvis liefert bewertete Hooks.</p>
+                  ) : (
+                    <div className="ov-mini four">{contentStages.map((c) => (
+                      <div key={c.label} className={c.attn && c.n ? "attn" : ""}><strong>{c.n}</strong><span>{c.label}</span></div>))}</div>
+                  )}
+                  <p className="cc-hint">Quelle: lokaler Content-Speicher. Keine Plattform-Kennzahlen angebunden.</p>
+                </section>
+                <section className="cc-card-box" aria-label="Aufträge">
+                  <header><h3>Offene Aufträge</h3><button type="button" className="cc-link" onClick={() => go("auftraege")}>Kanban</button></header>
                   <ul className="cc-list">
-                    {active.filter((o) => matches(o, search))
-                      .sort((a, b) => PRIO_ORDER.indexOf(a.prioritaet) - PRIO_ORDER.indexOf(b.prioritaet) || (a.frist || "9").localeCompare(b.frist || "9"))
-                      .slice(0, 6)
-                      .map((o) => (
-                        <li key={o.id}>
-                          <button type="button" className="cc-row" onClick={() => { setSelected({ kind: "order", order: o }); go("auftraege"); }}>
-                            <span className="grow"><span className="title">{o.titel}</span>
-                              <span className="meta">{columns.find((c) => c.id === o.status)?.titel}{o.kunde ? ` · ${o.kunde}` : ""}{o.frist ? ` · bis ${o.frist}` : ""}</span></span>
-                            <span className={`cc-prio prio-${o.prioritaet}`}>{o.prioritaet}</span>
-                          </button>
-                        </li>
-                      ))}
-                    {active.length === 0 && <li className="cc-empty">Keine offenen Aufträge. Lege einen unter „Aufträge“ an oder sag es Jarvis.</li>}
+                    {active.filter((o) => matches(o, search)).sort(byPrio).slice(0, 4).map((o) => (
+                      <li key={o.id}>
+                        <button type="button" className="cc-row" onClick={() => { setSelected({ kind: "order", order: o }); go("auftraege"); }}>
+                          <span className="grow"><span className="title">{o.titel}</span>
+                            <span className="meta">{columns.find((c) => c.id === o.status)?.titel}{o.kunde ? ` · ${o.kunde}` : ""}{o.frist ? ` · ${o.frist < today ? "überfällig seit" : "bis"} ${o.frist}` : ""}</span></span>
+                          <span className={`cc-prio prio-${o.prioritaet}`}>{o.prioritaet}</span>
+                        </button>
+                      </li>
+                    ))}
+                    {active.length === 0 && <li className="cc-empty">Keine offenen Aufträge.</li>}
                   </ul>
+                  {active.length > 4 && <p className="cc-hint">{active.length - 4} weitere im Kanban · {overdue.length} überfällig.</p>}
                 </section>
                 <section className="cc-card-box" aria-label="Dienste">
-                  <header><h3>Verbundene Dienste</h3></header>
-                  <ul className="cc-list">
-                    {services.map((v) => (
-                      <li key={v.name} className="cc-row"><span className="grow"><span className="title">{v.name}</span></span>
-                        <span className={`cc-state ${v.ok ? "DONE" : "FAILED"}`}>{v.text}</span></li>
-                    ))}
-                  </ul>
-                </section>
-                <section className="cc-card-box">
-                  <header><h3>Laufende Arbeit</h3><button type="button" className="cc-link" onClick={() => go("agenten")}>Details</button></header>
-                  <ul className="cc-list">
-                    {jobs.slice(0, 5).map((j) => (
-                      <li key={j.id} className="cc-row"><span className="grow"><span className="title">{j.titel || "Auftrag"}</span>
-                        <span className="meta">{j.art}</span></span><span className={`cc-state ${j.status}`}>{stateLabel(j.status)}</span></li>
-                    ))}
-                    {jobs.length === 0 && <li className="cc-empty">Keine Jobs seit dem letzten Start von Jarvis.</li>}
-                  </ul>
-                  {automations && (
-                    <p className="cc-hint">{automations.ablaeufe.filter((w) => w.aktiv).length} von {automations.ablaeufe.length} geplanten Abläufen aktiv ·
-                      Zeitplaner {automations.ablaeufe_schleife}</p>
+                  <header><h3>Dienste</h3><button type="button" className="cc-link" onClick={() => go("verbindungen")}>Einrichtung</button></header>
+                  {!connections ? <p className="cc-empty">{connError ?? "Verbindungen werden geprüft …"}</p> : (
+                    <>
+                      <ul className="cc-list">
+                        {needsYou.map((v) => (
+                          <li key={v.id} className="cc-row"><span className="grow"><span className="title">{v.name}</span><span className="meta">{v.hinweis}</span></span>
+                            <span className={`cc-state ${connectionClass(v.zustand)}`}>{v.zustand === "abgelaufen" ? "Abgelaufen" : v.zustand === "unvollstaendig" ? "Unvollständig" : "Fehler"}</span></li>
+                        ))}
+                      </ul>
+                      <p className="ov-services"><strong>{connectedServices.length} verbunden:</strong> {connectedServices.map((c) => c.name).join(", ") || "keiner"}</p>
+                      {openSetup.length > 0 && <p className="ov-services"><strong>{openSetup.length} nicht eingerichtet:</strong> {openSetup.map((c) => c.name).join(", ")}</p>}
+                    </>
                   )}
                 </section>
               </div>
@@ -569,28 +696,47 @@ export default function CommandView({
             : <p className="cc-empty">Kein Termin ausgewählt. <button type="button" className="cc-link" onClick={() => go("kalender")}>Zum Kalender</button></p>)}
           {section === "anrufe" && (
             <>
-              <div className="cc-page-head"><div><h2>Anrufe</h2><p>Gemessene Zahlen aus den von Jarvis erfassten Gesprächen. Nichts wird ohne Freigabe ins CRM geschrieben.</p></div>
+              <div className="cc-page-head"><div><h2>Vertrieb</h2><p>Vom Lead bis zur nächsten Umsatzaktion. Zahlen nur aus erfassten Gesprächen; ins CRM geht nichts ohne deine Freigabe.</p></div>
                 <button type="button" className="cc-link" onClick={() => void loadCalls()}>Aktualisieren</button></div>
-              <CallsPanel data={calls} error={callsError} canAsk={canEdit} onAsk={ask} days={callDays} onDays={(d) => { setCallDays(d); void loadCalls(d); }} />
+              <CallsPanel data={calls} error={callsError} canAsk={canEdit} onAsk={ask} days={callDays} onDays={(d) => { setCallDays(d); void loadCalls(d); }} onStartSkill={startSkill} />
             </>
           )}
           {section === "content" && (
             <>
               <div className="cc-page-head"><div><h2>Content</h2><p>Von der Idee bis zur Auswertung. Nichts wird automatisch veröffentlicht.</p></div>
                 <button type="button" className="cc-link" onClick={() => void loadContent()}>Aktualisieren</button></div>
-              <ContentPanel data={contentData} error={contentError} canEdit={canEdit} onMove={moveContent} onAsk={ask} />
+              <ContentPanel data={contentData} error={contentError} canEdit={canEdit} onMove={moveContent} onAsk={ask} onStartSkill={startSkill} />
             </>
           )}
           {section === "agenten" && (
             <>
-              <div className="cc-page-head"><div><h2>Agenten</h2><p>Welche KI-Rollen Jarvis wirklich bereitstellt und was gerade läuft.</p></div></div>
-              <AgentsPanel data={automations} jobs={jobs} error={automationError} canAsk={canEdit} onAsk={ask} />
+              <div className="cc-page-head"><div><h2>Agenten-Center</h2><p>Echte Jobs mit Schritten, Zeiten und Ergebnis. Aktiv ist nur, wofür wirklich ein Job läuft.</p></div></div>
+              <AgentCenter data={agentData} error={agentError} canAct={canEdit} focusJob={focusJob} busyId={capBusy}
+                onCancel={(id) => void cancelJob(id)} onRetry={(id) => void capabilityAction(id, "wiederholen")}
+                onApprovals={() => go("freigaben")} onOpenOrder={openOrder} onStartRole={startRole} onRefresh={() => void loadWork()} />
             </>
           )}
           {section === "automatisierungen" && (
             <>
-              <div className="cc-page-head"><div><h2>Automatisierungen</h2><p>Geplante Abläufe, n8n-Workflows und Integrationen – mit tatsächlichem Status.</p></div></div>
+              <div className="cc-page-head"><div><h2>Skills und Automationen</h2>
+                <p>Vier verschiedene Dinge: Fähigkeiten (ausführbar), Skills (Anleitungen, die als Job laufen), geplante Abläufe und n8n-Workflows.</p></div></div>
+              <SkillPlatform platform={platform} error={capError} canEdit={canEdit} busy={capBusy}
+                onAction={(id, action) => void capabilityAction(id, action)} onOpenOrder={openOrder}
+                onStart={startCapability} onToggleSkill={(id, active) => void toggleSkill(id, active)} onOpenApprovals={() => go("freigaben")} />
+              <div className="cc-page-head ac-roles-head"><div><h2>Geplante Abläufe und Workflows</h2></div></div>
               <AutomationsPanel data={automations} error={automationError} />
+            </>
+          )}
+          {section === "gedaechtnis" && (
+            <>
+              <div className="cc-page-head"><div><h2>Gedächtnis</h2><p>Dauerhaftes Wissen und Gesprächsarchiv – ansehen, suchen, korrigieren, bestätigen, exportieren, löschen.</p></div></div>
+              <MemoryCenter canEdit={canEdit} />
+            </>
+          )}
+          {section === "verbindungen" && (
+            <>
+              <div className="cc-page-head"><div><h2>Verbindungen und Einrichtung</h2><p>Was wirklich verbunden ist, was abgelaufen oder unvollständig ist – und was du dafür tun musst.</p></div></div>
+              <ConnectionsPanel data={connections} error={connError} loading={connBusy} onRefresh={() => void loadConnections(true)} />
             </>
           )}
           {section === "welt" && (

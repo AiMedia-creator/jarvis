@@ -48,7 +48,9 @@ def connect(client_file: str | None = None) -> None:
 
     if client_file:
         client_file = client_file.strip().strip("\"'").strip()
-        shutil.copy(client_file, client_secret_path())
+        src, dst = Path(client_file).expanduser().resolve(), client_secret_path().resolve()
+        if src != dst:  # liegt die Datei schon am Zielort, nichts kopieren
+            shutil.copy(src, dst)
     if not client_secret_path().exists():
         raise FileNotFoundError(f"Google-Zugangsdatei fehlt: {client_secret_path()} "
                                 "(Anleitung: Google Cloud Console, OAuth-Client 'Desktop-App').")

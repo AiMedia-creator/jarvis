@@ -163,7 +163,8 @@ def start(name: str, args: dict, quelle: str | None = None) -> tuple[Lauf, concu
     clean = Tool(cap.name, cap.beschreibung, cap.eingabe, lambda **_: "", list(cap.pflicht)).validate(given)
     if cap.gesperrt():
         raise ToolFailure(f"{cap.titel} ist derzeit nicht nutzbar: {cap.gesperrt()}")
-    job = jobs.create(f"{cap.titel}: {next(iter(clean.values()), '')}", "faehigkeiten", "faehigkeit")
+    first = str(next(iter(clean.values()), "")).strip()
+    job = jobs.create(f"{cap.titel}: {first}" if first else cap.titel, "faehigkeiten", "faehigkeit")
     # Wiederaufnahme auch nach einem Neustart: Eingaben liegen mit dem Job in SQLite (persist.save_job).
     job["wiederaufnahme"] = {"faehigkeit": cap.name, "args": {k: str(v)[:2000] if isinstance(v, str) else v
                                                               for k, v in clean.items()}}

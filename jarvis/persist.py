@@ -129,5 +129,11 @@ def restore(force: bool = False) -> dict:
 
     from . import policy
 
+    try:  # Äußerungen ohne Antwort (Absturz/Neustart mitten im Zug): Wortlaut bleibt, Status wird "interrupted"
+        from . import memory
+
+        memory.store().close_pending()
+    except Exception as exc:
+        print(f"[persist] offene Äußerungen nicht abgeschlossen: {type(exc).__name__}")
     return {"jobs": jobs.restore(load_jobs()), "freigaben": approvals.restore(load_approvals()),
             "unklare_aktionen": policy.restore()}

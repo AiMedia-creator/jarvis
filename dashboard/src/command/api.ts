@@ -110,7 +110,8 @@ export type CallRecord = {
 };
 export type CallStats = {
   zeitraum_tage: number; gespraeche: number; nach_ergebnis: Record<string, number>; termine: number; termine_pro_100: number | null;
-  crm_offen: number; followups_faellig: number; mit_naechstem_schritt: number; mittlere_dauer_s: number | null; quelle: string; stand: string;
+  crm_offen: number; followups_faellig: number; mit_naechstem_schritt: number;
+  ohne_naechsten_schritt?: number; telefon_ungeklaert?: number; ohne_kontaktquelle?: number; mittlere_dauer_s: number | null; quelle: string; stand: string;
 };
 export type CallOverview = { projekte: CallProject[]; kennzahlen: CallStats; letzte_anrufe: CallRecord[]; ergebnisse: Record<string, string> };
 export type ContentHook = { text: string; belegt_durch?: string; klarheit?: number; relevanz?: number; neugier?: number; belegbarkeit?: number; summe?: number | null };
@@ -156,6 +157,57 @@ export type CapabilityRun = {
   fehler: string | null; abbrechbar: boolean; fortschritt?: string; schritte?: { werkzeug: string; status: string }[]; wiederholbar?: boolean;
 };
 export type LogEntry = Record<string, unknown>;
+
+/** Agenten-Center: ein echter Job mit Agent, Schritten und Zeiten (aus jobs.py/SQLite). */
+export type JobStep = {
+  id: string; werkzeug: string; status: string; berechtigung: string; start: number | null; ende: number | null;
+  ergebnis: string | null; fehler: string | null; freigabe_id?: string | null;
+};
+export type AgentJob = {
+  id: string; titel: string; art: string; status: string; agent: { id: string; name: string; art: string }; unteragenten: string[];
+  gespraech: string; start: number; ende: number | null; letzte_aktivitaet: number; schritte: JobStep[];
+  schritte_gesamt: number; schritte_fertig: number; fortschritt: string; werkzeuge: string[];
+  ergebnis: string | null; fehler: string | null; unterbrochen_durch_neustart: boolean; freigaben: string[];
+  abbrechbar: boolean; wiederholbar: boolean; faehigkeit: string | null; modell: string | null;
+  nutzung: { tokens: Record<string, number>; kosten_usd?: number | null } | null;
+  repo: { name: string; commit: string; url: string } | null;
+};
+export type AgentRole = {
+  id: string; name: string; aufgabe: string; skill: string | null; werkzeuge: string[]; fehlende_werkzeuge: string[];
+  status: "bereit" | "teilweise" | "fehlt" | "deaktiviert" | "nicht_eingerichtet"; grund: string; umsetzung: string;
+  startbar: boolean; vorlage: string; jobs_aktiv: number; jobs_gesamt: number;
+  letzter_job: { id: string; titel: string; status: string; start: number } | null;
+};
+export type AgentCenterData = {
+  jobs: AgentJob[]; zahlen: Record<string, number>; stand: number; hinweis: string;
+  agenten: Automations["agenten"]; rollen: AgentRole[];
+};
+export type ConnectionState = "verbunden" | "unvollstaendig" | "abgelaufen" | "nicht_eingerichtet" | "fehler";
+export type Connection = {
+  id: string; name: string; zweck: string; zustand: ConnectionState; pruefung: "live" | "konfiguration";
+  details: string[]; schritte: string[]; hinweis: string; geprueft?: string;
+  dienste: Record<string, { name: string; aktiv: boolean }>;
+};
+export type Connections = { stand: string; verbindungen: Connection[]; braucht_dich: number; demo?: boolean };
+export type MemoryFactFull = {
+  id: string; content: string; category: string; source: string; client: string; created_at: string; updated_at: string;
+  valid_until: string | null; confidence: number; consent: string; confirmed_at: string | null; origin_episode: string;
+  conflicts: string[]; gueltig: boolean; versionen: number;
+};
+export type MemoryArchiveItem = {
+  id: string; conversation_id: string; user_text: string; assistant_text: string; status: string; created_at: string;
+  kanal: string; updated_at: string | null;
+};
+export type MemoryCenterData = {
+  suche: string; wissen: MemoryFactFull[]; archiv: MemoryArchiveItem[]; stand: string;
+  notizdateien?: { name: string; groesse: number; geaendert: string; auszug: string }[];
+  zahlen: { facts: number; episodes: number; events: number; path: string; ausstehend: number; fehlgeschlagen: number;
+    widersprueche: number; archiv_seit: string | null; archiv_nach_status: Record<string, number>; archiv_nach_kanal: Record<string, number> };
+};
+export type MemoryHistory = {
+  aktuell: MemoryFactFull; versionen: { content: string; category: string; source: string; changed_at: string; reason: string }[];
+  ereignisse: { typ: string; zeit: string }[];
+};
 
 export class ApiError extends Error {
   constructor(
@@ -227,6 +279,15 @@ export const api = {
   setSkillActive: (id: string, aktiv: boolean) => call<{ ok: boolean }>("POST", "/api/skills/aktivieren", { id, aktiv }),
   capabilityAction: (id: string, aktion: "abbrechen" | "wiederholen") =>
     call<{ abgebrochen?: boolean; lauf?: CapabilityRun }>("POST", `/api/faehigkeiten/${encodeURIComponent(id)}/${aktion}`, {}),
+  agentCenter: () => call<AgentCenterData>("GET", "/api/agenten"),
+  connections: (fresh = false) => call<Connections>("GET", `/api/verbindungen${fresh ? "?neu=true" : ""}`),
+  memoryCenter: (q = "", limit = 60) => call<MemoryCenterData>("GET", `/api/gedaechtnis?q=${encodeURIComponent(q)}&limit=${limit}`),
+  memoryHistory: (id: string) => call<MemoryHistory>("GET", `/api/gedaechtnis/verlauf/${encodeURIComponent(id)}`),
+  memoryExport: () => call<{ datei: string; wissen: number; versionen: number; archiv: number; exportiert: string; inhalt?: unknown }>("GET", "/api/gedaechtnis/export"),
+  memoryAction: (aktion: "speichern" | "aendern" | "bestaetigen" | "loeschen" | "archiv_loeschen" | "index_neu", body: Record<string, unknown> = {}) =>
+    call<Record<string, any>>("POST", `/api/gedaechtnis/${aktion}`, body),
+  transcript: (rolle: "user" | "agent", text: string, ref: string) =>
+    call<{ id: string | null; status: string; duplicate?: boolean }>("POST", "/api/transkript", { rolle, text, ref }),
   decide: (id: string, aktion: "freigeben" | "verwerfen") =>
     call<{ ergebnis: string }>("POST", `/api/approvals/${encodeURIComponent(id)}/${aktion}`, {}),
 };

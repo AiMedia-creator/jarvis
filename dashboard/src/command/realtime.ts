@@ -37,7 +37,78 @@ export function loadClient(): Promise<ClientModule> {
   return clientPromise;
 }
 
+/** Speicherstatus der erkannten Äußerungen dieser Sitzung plus Rückstand aus früheren (noch nicht übertragen). */
+export type SaveState = { gespeichert: number; ausstehend: number; fehlgeschlagen: number };
+type QueueItem = { ref: string; rolle: "user" | "agent"; text: string; versuche: number };
+const QUEUE_KEY = "jarvis-transkript-warteschlange";
+let saved = 0;
+let flushing = false;
+
+function readQueue(): QueueItem[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(QUEUE_KEY) ?? "[]");
+    return Array.isArray(raw) ? raw.filter((q) => q && typeof q.ref === "string" && typeof q.text === "string").slice(-400) : [];
+  } catch { return []; }
+}
+function writeQueue(items: QueueItem[]): void {
+  try { localStorage.setItem(QUEUE_KEY, JSON.stringify(items.slice(-400))); } catch { /* Speicher voll/gesperrt: Rückstand bleibt nur in dieser Sitzung */ }
+}
+let queue: QueueItem[] = readQueue();
+const stateOf = (): SaveState => ({
+  gespeichert: saved,
+  ausstehend: queue.filter((q) => q.versuche < 3).length,
+  fehlgeschlagen: queue.filter((q) => q.versuche >= 3).length,
+});
+export const pendingSaveState = (): SaveState => stateOf();
+
+/**
+ * Überträgt wartende Äußerungen in das Gesprächsarchiv. Jede Äußerung liegt zuerst lokal in der Warteschlange
+ * (übersteht Verbindungsabbruch und Neuladen) und wird erst nach bestätigtem Speichern entfernt. Die Referenz
+ * macht Wiederholungen ungefährlich: derselbe Eintrag wird serverseitig nie doppelt angelegt.
+ */
+export async function flushTranscripts(notify: (state: SaveState) => void, retryFailed = true): Promise<void> {
+  if (retryFailed) queue = queue.map((q) => ({ ...q, versuche: Math.min(q.versuche, 2) }));
+  if (flushing) return; // der laufende Durchlauf liest die Warteschlange nach jedem Eintrag neu und nimmt Neues mit
+  flushing = true;
+  let stuck = false;
+  try {
+    // Immer den ältesten sendbaren Eintrag zuerst (Reihenfolge Nutzer → Jarvis bleibt erhalten); neu eingereihte
+    // Äußerungen werden im selben Durchlauf mitgenommen.
+    for (let item = queue.find((q) => q.versuche < 3); item; item = queue.find((q) => q.versuche < 3)) {
+      const current = item;
+      try {
+        await api.transcript(current.rolle, current.text, current.ref);
+        queue = queue.filter((q) => q.ref !== current.ref);
+        saved++;
+      } catch (error) {
+        const status = (error as { status?: number })?.status;
+        // 400 = Äußerung wird vom Server abgelehnt (leer/zu lang): nicht endlos wiederholen.
+        queue = status === 400 ? queue.filter((q) => q.ref !== current.ref)
+          : queue.map((q) => (q.ref === current.ref ? { ...q, versuche: q.versuche + 1 } : q));
+        if (status !== 400) { stuck = true; break; } // Server gerade nicht erreichbar: gleich erneut versuchen
+      } finally {
+        writeQueue(queue);
+        notify(stateOf());
+      }
+    }
+  } finally {
+    flushing = false;
+    notify(stateOf());
+    // Automatischer neuer Versuch, solange etwas Sendbares wartet (nach 3 Fehlversuchen: Knopf „erneut senden“).
+    if (stuck && queue.some((q) => q.versuche < 3)) window.setTimeout(() => void flushTranscripts(notify, false), 4000);
+  }
+}
+function enqueue(rolle: "user" | "agent", text: string, notify: (state: SaveState) => void): void {
+  const ref = `rt-${crypto.randomUUID().replaceAll("-", "").slice(0, 24)}`;
+  queue.push({ ref, rolle, text: text.slice(0, 8000), versuche: 0 });
+  writeQueue(queue);
+  notify(stateOf());
+  void flushTranscripts(notify, false);
+}
+
 export type RealtimeCallbacks = {
+  /** Speicherstatus der Äußerungen (jede erkannte Äußerung wird sofort ins Gesprächsarchiv geschrieben). */
+  onSaved?: (state: SaveState) => void;
   onMode: (mode: "verbindet" | "listening" | "speaking") => void;
   onUser: (text: string) => void;
   onAgent: (text: string) => void;
@@ -144,6 +215,8 @@ export class RealtimeSession {
         const role = payload.role || (payload.source === "ai" ? "agent" : "user");
         const text = String(payload.message ?? "");
         if (!text) return;
+        // Erst sichern, dann anzeigen: Bricht die Sitzung ab, steht das Erkannte schon im Archiv bzw. in der Warteschlange.
+        enqueue(role === "user" ? "user" : "agent", text, this.callbacks.onSaved ?? (() => undefined));
         if (role === "user") {
           void this.jobStart(text);
           this.callbacks.onUser(text);

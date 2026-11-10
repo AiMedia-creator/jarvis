@@ -428,6 +428,114 @@ class Bridge:
         from . import jobs
         return web.json_response({"jobs": await asyncio.to_thread(jobs.recent, 30)})
 
+    # --- Agenten-Center, Verbindungen, Gedächtnis-Center, fortlaufendes Transkript --------------------------
+
+    def _agenten(self) -> dict:
+        from . import skill_laufzeit, uebersicht
+        tools = self._registered_tools()
+        view = uebersicht.jobs_view(50)
+        view["agenten"] = uebersicht.agents()
+        view["rollen"] = uebersicht.rollen(tools, skill_laufzeit.definitions(tools), view["jobs"])
+        return view
+
+    async def agenten(self, request):
+        return web.json_response(await asyncio.to_thread(self._agenten))
+
+    async def verbindungen(self, request):
+        from . import verbindungen
+        if self.demo:
+            return web.json_response({"stand": "", "verbindungen": [], "braucht_dich": 0, "demo": True})
+        force = request.query.get("neu") == "1"
+        return web.json_response(await asyncio.to_thread(verbindungen.uebersicht, force))
+
+    async def gedaechtnis(self, request):
+        from . import memory
+        try:
+            limit = max(1, min(200, int(request.query.get("limit", "60"))))
+        except ValueError:
+            raise web.HTTPBadRequest(text="Ungültiges Limit")
+        return web.json_response(await asyncio.to_thread(memory.store().center, request.query.get("q", "")[:400], limit))
+
+    async def gedaechtnis_export(self, request):
+        """Export als Datei unter ~/.jarvis/exports (nur für dich lesbar); kleiner Inhalt zusätzlich direkt zum Download."""
+        from . import memory
+
+        def run() -> dict:
+            data = memory.store().export()
+            folder = config.data_dir() / "exports"
+            folder.mkdir(mode=0o700, exist_ok=True)
+            path = folder / f"gedaechtnis-{time.strftime('%Y%m%d-%H%M%S')}.json"
+            raw = json.dumps(data, ensure_ascii=False, indent=1)
+            path.write_text(raw, encoding="utf-8")
+            path.chmod(0o600)
+            # Nur die letzten 5 Exporte behalten: Alte Kopien würden gelöschte Erinnerungen weitertragen.
+            for old in sorted(folder.glob("gedaechtnis-*.json"))[:-5]:
+                with contextlib.suppress(OSError):
+                    old.unlink()
+            out = {"datei": str(path), "wissen": len(data["wissen"]), "versionen": len(data["versionen"]),
+                   "archiv": len(data["archiv"]), "exportiert": data["exportiert"]}
+            if len(raw.encode("utf-8")) < 1_200_000:
+                out["inhalt"] = data
+            return out
+        return web.json_response(await asyncio.to_thread(run))
+
+    async def gedaechtnis_verlauf(self, request):
+        from . import memory
+        ident = request.match_info["id"]
+        if not _ID.fullmatch(ident):
+            return web.json_response({"fehler": "Ungültige ID."}, status=400)
+        try:
+            return web.json_response(await asyncio.to_thread(memory.store().history, ident))
+        except KeyError:
+            return web.json_response({"fehler": "Erinnerung nicht gefunden."}, status=404)
+
+    async def gedaechtnis_aktion(self, request):
+        """Schreibaktionen des Gedächtnis-Centers – nur der Nutzer im Dashboard (Session, Origin, X-Jarvis in Java)."""
+        from . import memory
+        action = request.match_info["aktion"]
+        data = await self.json_body(request)
+        store = memory.store()
+        ident = str(data.get("id", ""))
+        if action in ("aendern", "bestaetigen", "loeschen", "archiv_loeschen") and not _ID.fullmatch(ident):
+            return web.json_response({"fehler": "Ungültige ID."}, status=400)
+        try:
+            if action == "speichern":
+                result = await asyncio.to_thread(lambda: store.remember(str(data.get("content", "")), str(data.get("category") or "note"),
+                                                                       "user", client="dashboard"))
+                return web.json_response({"ok": True, "eintrag": result})
+            if action == "aendern":
+                result = await asyncio.to_thread(lambda: store.update_fact(ident, str(data.get("content", "")),
+                                                                          data.get("category") or None, "user"))
+                return web.json_response({"ok": True, "eintrag": result})
+            if action == "bestaetigen":
+                return web.json_response({"ok": True, "eintrag": await asyncio.to_thread(store.confirm, ident)})
+            if action == "loeschen":
+                return web.json_response(await asyncio.to_thread(store.forget_report, ident))
+            if action == "archiv_loeschen":
+                return web.json_response(await asyncio.to_thread(store.delete_episode, ident))
+            if action == "index_neu":
+                return web.json_response({"ok": True, **await asyncio.to_thread(store.rebuild_index)})
+        except KeyError:
+            return web.json_response({"fehler": "Eintrag nicht gefunden."}, status=404)
+        except ValueError:
+            return web.json_response({"fehler": "Nicht gespeichert: leer, zu lang oder enthält Zugangsdaten."}, status=400)
+        return web.json_response({"fehler": "Unbekannte Aktion."}, status=400)
+
+    async def transkript(self, request):
+        """Erkannte Äußerung aus dem Echtzeit-Sprachmodus fortlaufend ins Gesprächsarchiv (nur Text, nie Audio)."""
+        from . import memory
+        data = await self.json_body(request)
+        text, ref = str(data.get("text", "")).strip(), str(data.get("ref", ""))
+        if not text or len(text) > 8000 or data.get("rolle") not in ("user", "agent") or not _ID.fullmatch(ref):
+            return web.json_response({"fehler": "Ungültige Äußerung (leer, zu lang oder ohne Referenz)."}, status=400)
+        if self.demo:
+            return web.json_response({"status": "nicht_gespeichert", "hinweis": "Demo-Modus"})
+        try:
+            saved = await asyncio.to_thread(memory.store().log_utterance, "echtzeit", data["rolle"], text, "echtzeit", ref)
+        except ValueError:
+            return web.json_response({"fehler": "Ungültige Äußerung."}, status=400)
+        return web.json_response(saved)
+
     async def automations(self, request):
         from . import uebersicht
         return web.json_response(await asyncio.to_thread(uebersicht.automations_status))
@@ -925,6 +1033,13 @@ def create_app(token: str | None = None, demo: bool | None = None) -> web.Applic
     app.router.add_post("/internal/approvals/{id}/{aktion}", bridge.approval_decide)
     app.router.add_get("/internal/jobs", bridge.jobs_list)
     app.router.add_get("/internal/automations", bridge.automations)
+    app.router.add_get("/internal/agenten", bridge.agenten)
+    app.router.add_get("/internal/verbindungen", bridge.verbindungen)
+    app.router.add_get("/internal/gedaechtnis", bridge.gedaechtnis)
+    app.router.add_get("/internal/gedaechtnis/export", bridge.gedaechtnis_export)
+    app.router.add_get("/internal/gedaechtnis/verlauf/{id}", bridge.gedaechtnis_verlauf)
+    app.router.add_post("/internal/gedaechtnis/{aktion}", bridge.gedaechtnis_aktion)
+    app.router.add_post("/internal/transkript", bridge.transkript)
     app.router.add_get("/internal/geocode", bridge.geocode)
     app.router.add_post("/internal/n8n/callback", bridge.n8n_callback)
     app.router.add_get("/internal/settings", bridge.settings_get)

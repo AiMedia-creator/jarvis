@@ -14,7 +14,7 @@ import { Dock } from "./components/Dock";
 import { VoiceCore } from "./components/VoiceCore";
 import { UiSync } from "./sync";
 import { Telemetry } from "./command/telemetry";
-import { RealtimeSession } from "./command/realtime";
+import { RealtimeSession, flushTranscripts, pendingSaveState, type SaveState } from "./command/realtime";
 import { loadPrefs, savePrefs, type VoicePrefs } from "./command/SettingsDialog";
 import { api } from "./command/api";
 import type {
@@ -37,7 +37,6 @@ import "./styles.css";
 const NewsView = lazy(() => import("./views/NewsView"));
 const MarketView = lazy(() => import("./views/MarketView"));
 const CamerasView = lazy(() => import("./views/CamerasView"));
-const MemoryView = lazy(() => import("./views/MemoryView"));
 const OpsView = lazy(() => import("./views/OpsView"));
 const CommandView = lazy(() => import("./views/CommandView"));
 
@@ -211,6 +210,9 @@ export function App() {
   const mutedRef = useRef(false);
   const realtimeRef = useRef<RealtimeSession | null>(null);
   const [voiceMode, setVoiceMode] = useState<"studio" | "echtzeit">("studio");
+  // Speicherstatus der erkannten Echtzeit-Äußerungen (gespeichert / ausstehend / fehlgeschlagen).
+  const [transcriptSave, setTranscriptSave] = useState<SaveState>(() => pendingSaveState());
+  useEffect(() => { void flushTranscripts(setTranscriptSave); }, []);
   const [voicePrefs, setVoicePrefsState] = useState<VoicePrefs>(loadPrefs);
   const prefsRef = useRef(voicePrefs);
   const applyPrefs = useCallback((engine: AudioEngine | null, prefs: VoicePrefs) => {
@@ -535,6 +537,7 @@ export function App() {
       onAgent: (value) => telemetry.realtimeAgent(value),
       onTool: (name, running) => telemetry.realtimeTool(name, running),
       onInterrupted: () => telemetry.realtimeInterrupted(),
+      onSaved: (state) => setTranscriptSave(state),
       onError: (message) => { telemetry.realtimeError(message); addLog(`Echtzeit: ${message}`, "warn"); },
       onEnded: (reason) => {
         if (realtimeRef.current === session) {
@@ -654,14 +657,15 @@ export function App() {
       ? "Server-Konfiguration nicht erreichbar."
       : null;
   // Arbeitsbereich (Dashboard) ist die Startseite; Gespräch, Kommandozentrale und Weltansicht leben darin.
-  const workspace = current === "conversation" || current === "command" || current === "world";
+  // „Gedächtnis“ (auch per Sprachbefehl) öffnet das Gedächtnis-Center im Arbeitsbereich.
+  const workspace = current === "conversation" || current === "command" || current === "world" || current === "memory";
   if (workspace)
     return (
       <div className="stage workspace" data-view={current} data-demo={config.demo || undefined}>
         <Suspense fallback={<div className="view-loading">…</div>}>
           <CommandView
             query={current === "command" ? viewModel.query : undefined}
-            section={current === "world" ? "welt" : undefined}
+            section={current === "world" ? "welt" : current === "memory" ? "gedaechtnis" : undefined}
             worldQuery={current === "world" ? viewModel.query : undefined}
             role={role}
             connected={connected}
@@ -678,6 +682,8 @@ export function App() {
             muted={muted}
             onMutedChange={setMuted}
             voiceMode={voiceMode}
+            transcriptSave={transcriptSave}
+            onRetryTranscripts={() => void flushTranscripts(setTranscriptSave)}
             onStartRealtime={startRealtime}
             onStopRealtime={stopRealtime}
             getRealtime={getRealtime}
@@ -701,7 +707,6 @@ export function App() {
           {current === "cameras" && (
             <CamerasView cameras={cameras} selected={selectedCamera} onSelect={chooseCamera} demo={config.demo} onBack={back} />
           )}
-          {current === "memory" && <MemoryView room={room} onBack={back} />}
           {current === "ops" && (
             <OpsView
               metrics={metrics}
