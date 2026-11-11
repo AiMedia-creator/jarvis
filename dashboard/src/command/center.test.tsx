@@ -167,4 +167,50 @@ describe("Command Center", () => {
     await act(async () => box.querySelector<HTMLButtonElement>("button")!.click());
     expect(onOpenApprovals).toHaveBeenCalled();
   });
+
+  it("lädt Anhänge sofort hoch, zeigt Status, entfernt sie und sendet sie mit der nächsten Nachricht", async () => {
+    const calls: { url: string; method: string; body: unknown }[] = [];
+    let fail = false;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: any = {}) => {
+      calls.push({ url, method: init.method ?? "GET", body: init.body });
+      if ((init.method ?? "GET") === "POST" && fail)
+        return { ok: false, status: 415, json: async () => ({ fehler: "Dateityp nicht unterstützt." }) };
+      if ((init.method ?? "GET") === "POST")
+        return { ok: true, status: 200, json: async () => ({ anhang: { id: "anh_0123456789abcdef01234567", name: "angebot.pdf", art: "PDF",
+          typ: "pdf", groesse: 2048, gekuerzt: false, detail: "3 Seiten", zeichen: 900, status: "bereit" } }) };
+      return { ok: true, status: 200, json: async () => ({ entfernt: true }) };
+    }));
+    const { host, props } = await render({ room: "room-abcdefgh" });
+    const input = host.querySelector<HTMLInputElement>('.cc-transport input[type="file"]')!;
+    expect(input.accept).toContain(".docx");
+    const pdf = new File(["%PDF-1.4"], "angebot.pdf", { type: "application/pdf" });
+    await act(async () => {
+      Object.defineProperty(input, "files", { value: [pdf], configurable: true });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(calls[0].url).toBe("/api/anhaenge?raum=room-abcdefgh&name=angebot.pdf");
+    expect(calls[0].body).toBe(pdf); // rohe Bytes, kein Base64-JSON
+    expect(host.querySelector(".cc-file.bereit")!.textContent).toContain("3 Seiten");
+    // nur Anhang, kein Text: Senden schickt einen Standardsatz und leert die Liste
+    await act(async () => host.querySelector<HTMLFormElement>(".cc-transport")!.requestSubmit());
+    expect(props.onAsk).toHaveBeenCalledWith("Bitte sieh dir die angehängten Dateien an.");
+    expect(host.querySelector(".cc-file")).toBeNull();
+    // Fehler wird verständlich gezeigt und lässt sich entfernen
+    fail = true;
+    await act(async () => {
+      Object.defineProperty(input, "files", { value: [new File(["x"], "virus.exe")], configurable: true });
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(host.querySelector(".cc-file.fehler")!.textContent).toContain("Dateityp nicht unterstützt.");
+    await act(async () => host.querySelector<HTMLButtonElement>(".cc-file-x")!.click());
+    expect(host.querySelector(".cc-file")).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  it("ohne Raum oder als Beobachter kein Anhängen", async () => {
+    const { host } = await render();
+    expect(host.querySelector<HTMLButtonElement>(".cc-attach")!.disabled).toBe(true);
+  });
 });

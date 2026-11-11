@@ -29,6 +29,9 @@ SCOPES = [
 # Nur fuer drive_ordnen (Verschieben/Umbenennen vorhandener Dateien, immer mit Freigabe). Optional: Fehlt sie im
 # Token, funktionieren alle anderen Google-Werkzeuge weiter; nur der Drive-Umbau bittet um erneutes Verbinden.
 DRIVE_ORGANIZE = "https://www.googleapis.com/auth/drive"
+# Optional: fremde Google-Tabellen bearbeiten (eigene, von Jarvis erstellte gehen schon mit drive.file). Fehlt sie im
+# Token, meldet sheet_schreiben das verständlich; Lesen geht mit drive.readonly.
+SHEETS_EDIT = "https://www.googleapis.com/auth/spreadsheets"
 
 
 def client_secret_path() -> Path:
@@ -55,7 +58,9 @@ def connect(client_file: str | None = None) -> None:
         raise FileNotFoundError(f"Google-Zugangsdatei fehlt: {client_secret_path()} "
                                 "(Anleitung: Google Cloud Console, OAuth-Client 'Desktop-App').")
     print("Browser oeffnet sich: bei Google anmelden und ALLE Haekchen setzen ...")
-    flow = InstalledAppFlow.from_client_secrets_file(str(client_secret_path()), [*SCOPES, DRIVE_ORGANIZE])
+    # Desktop-App-Ablauf mit Rückleitung auf 127.0.0.1 (Loopback) und PKCE; optionale Berechtigungen kann man bei
+    # Google abwählen – Jarvis arbeitet dann mit dem Rest weiter.
+    flow = InstalledAppFlow.from_client_secrets_file(str(client_secret_path()), [*SCOPES, DRIVE_ORGANIZE, SHEETS_EDIT])
     creds = flow.run_local_server(port=0, prompt="consent")
     token_path().write_text(creds.to_json(), encoding="utf-8")
     token_path().chmod(0o600)
@@ -250,6 +255,7 @@ def tools() -> list[Tool]:
         return []
     from .drive_ordnung import tools as drive_tools
     from .google_suite import tools as suite_tools
+    from .sheets import tools as sheet_tools
 
     confirm = boolean("true NUR wenn der Nutzer gerade ausdruecklich 'ja' zu GENAU dieser Aktion gesagt hat")
     return [
@@ -278,5 +284,6 @@ def tools() -> list[Tool]:
               "bestaetigt_vom_nutzer": confirm, "ort": string("Ort (optional)"), "beschreibung": string("Notizen (optional)")},
              termin_erstellen, ["titel", "beginn", "ende", "bestaetigt_vom_nutzer"]),
         *suite_tools(),
+        *sheet_tools(),
         *drive_tools(),
     ]

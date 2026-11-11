@@ -117,6 +117,15 @@ public final class PythonBridgeProvider implements GenerationProvider {
                 .defaultIfEmpty(Map.of())
                 .map(value -> org.springframework.http.ResponseEntity.status(response.statusCode()).body(value)));
     }
+    /** Dateianhang als rohe Bytes an die Brücke (nur Arbeitsspeicher, Prüfung von Typ und Inhalt in Python). */
+    public Mono<org.springframework.http.ResponseEntity<Map<String, Object>>> upload(String path, byte[] data) {
+        String bearer = tokenSupplier.get(); if (bearer == null || bearer.isBlank()) return Mono.error(new IllegalStateException("Python-Bridge-Token fehlt."));
+        return client.post().uri(java.net.URI.create(props.getBridgeUrl().replaceAll("/+$", "") + path))
+                .headers(h -> h.setBearerAuth(bearer)).contentType(MediaType.APPLICATION_OCTET_STREAM).bodyValue(data)
+                .exchangeToMono(response -> response.bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
+                        .defaultIfEmpty(Map.of())
+                        .map(value -> org.springframework.http.ResponseEntity.status(response.statusCode()).body(value)));
+    }
     public static String query(String value) { return encode(value); }
     private Mono<Map<String, Object>> memory(String method, String path, Object body) {
         String bearer = tokenSupplier.get(); if (bearer == null || bearer.isBlank()) return Mono.error(new IllegalStateException("Python-Bridge-Token fehlt."));

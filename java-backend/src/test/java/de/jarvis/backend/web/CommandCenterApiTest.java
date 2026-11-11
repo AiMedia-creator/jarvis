@@ -26,6 +26,12 @@ class CommandCenterApiTest {
     void setUp() {
         bridgeServer = HttpServer.create().host("127.0.0.1").port(0).handle((request, response) -> {
             calls.add(request.method().name() + " " + request.uri());
+            if (request.uri().startsWith("/internal/anhaenge") && request.method().name().equals("POST"))
+                return request.receive().aggregate().asByteArray().defaultIfEmpty(new byte[0]).flatMap(bytes -> {
+                    calls.add("BYTES " + bytes.length + " " + request.requestHeaders().get("Content-Type"));
+                    return response.header("Content-Type", "application/json")
+                            .sendString(reactor.core.publisher.Mono.just("{\"anhang\":{\"id\":\"anh_x\"}}")).then();
+                });
             if (request.uri().startsWith("/internal/orders/A-konflikt"))
                 return response.status(409).header("Content-Type", "application/json")
                         .sendString(reactor.core.publisher.Mono.just("{\"fehler\":\"geändert\",\"aktuell\":{\"version\":7}}")).then();
@@ -110,5 +116,26 @@ class CommandCenterApiTest {
         web.post().uri("/api/skills/aktivieren").header("Origin", "http://localhost:8080").header("X-Jarvis", "1")
                 .bodyValue(Map.of("id", "importiert:a/b", "aktiv", false)).exchange().expectStatus().isOk();
         assertTrue(calls.containsAll(List.of("POST /internal/faehigkeiten/starten", "POST /internal/skills/aktivieren")), calls.toString());
+    }
+
+    @Test
+    void anhangNurMitSchreibrechtenUndMitGroessengrenze() {
+        byte[] pdf = "%PDF-1.4 test".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        web.post().uri("/api/anhaenge?raum=room-abc&name=a.pdf").bodyValue(pdf).exchange().expectStatus().isForbidden();
+        web.post().uri("/api/anhaenge?raum=../x&name=a.pdf").header("Origin", "http://localhost:8080").header("X-Jarvis", "1")
+                .bodyValue(pdf).exchange().expectStatus().isBadRequest();
+        web.post().uri("/api/anhaenge?raum=room-abc&name=a.pdf").header("Origin", "http://localhost:8080").header("X-Jarvis", "1")
+                .bodyValue(pdf).exchange().expectStatus().isOk().expectBody().jsonPath("$.anhang.id").isEqualTo("anh_x");
+        byte[] big = new byte[ApiController.MAX_UPLOAD + 1];
+        web.post().uri("/api/anhaenge?raum=room-abc&name=b.pdf").header("Origin", "http://localhost:8080").header("X-Jarvis", "1")
+                .bodyValue(big).exchange().expectStatus().isEqualTo(413);
+        web.delete().uri("/api/anhaenge/anh_0123456789abcdef01234567?raum=room-abc").header("Origin", "http://localhost:8080")
+                .header("X-Jarvis", "1").exchange().expectStatus().isOk();
+        web.delete().uri("/api/anhaenge/../../x?raum=room-abc").header("Origin", "http://localhost:8080")
+                .header("X-Jarvis", "1").exchange().expectStatus().is4xxClientError();
+        assertTrue(calls.contains("POST /internal/anhaenge?conversation_id=room-abc&name=a.pdf"));
+        assertTrue(calls.stream().anyMatch(c -> c.startsWith("BYTES " + pdf.length + " application/octet-stream")));
+        assertTrue(calls.contains("DELETE /internal/anhaenge/anh_0123456789abcdef01234567?conversation_id=room-abc"));
+        assertFalse(calls.stream().anyMatch(c -> c.contains("b.pdf")));
     }
 }

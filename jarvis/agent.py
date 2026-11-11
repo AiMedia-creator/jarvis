@@ -13,7 +13,7 @@ import anthropic
 from anthropic.lib.tools import ToolError
 from anthropic.lib.tools._beta_builtin_memory_tool import BetaLocalFilesystemMemoryTool
 
-from . import config, profile, skills
+from . import config, modelle, profile, skills
 from .memory import store as memory_store
 from .tools import Tool, ToolFailure, all_tools
 from .tools import google as google_tools
@@ -417,8 +417,30 @@ def classify_error(exc: BaseException) -> tuple[str | None, int | None]:
     return None, None
 
 
+class ProviderNotReady(Exception):
+    """Der gewählte Modell-Anbieter ist nicht eingerichtet (Schlüssel fehlt, kein Ollama-Modell gewählt …)."""
+
+
 def spoken_error(exc: BaseException) -> str | None:
-    """Bekannte Ausfälle von Claude als klare, sprechbare Meldung (statt stillem Abbruch). None = unbekannt."""
+    """Bekannte Ausfälle des Modell-Anbieters als klare, sprechbare Meldung (statt stillem Abbruch). None = unbekannt."""
+    if isinstance(exc, ProviderNotReady):
+        return f"Das gewählte Modell ist nicht eingerichtet: {exc}"
+    who = getattr(exc, "jarvis_anbieter", "anthropic")
+    if who != "anthropic":
+        name = modelle.PROVIDERS[who].name if who in modelle.PROVIDERS else who
+        kind, retry_after = classify_error(exc)
+        if kind == "verbindung":
+            return ("Ich erreiche Ollama auf diesem Rechner nicht. Bitte die Ollama-App starten." if who == "ollama"
+                    else f"Ich erreiche {name} gerade nicht. Bitte Internetverbindung prüfen.")
+        if kind == "schluessel":
+            return f"Der Schlüssel für {name} wird abgelehnt. Bitte die Umgebungsvariable prüfen."
+        if kind in ("rate_limit", "ueberlastet"):
+            return f"{name} bremst gerade oder ist überlastet. Frag mich bitte gleich noch einmal."
+        if kind in ("guthaben", "ausgabenlimit", "zugriff"):
+            return f"{name} lehnt die Anfrage ab (Guthaben, Limit oder Berechtigung). Bitte das Konto beim Anbieter prüfen."
+        if getattr(exc, "status_code", None) == 404 and who == "ollama":
+            return "Das gewählte Ollama-Modell ist nicht installiert. Bitte mit 'ollama pull' laden."
+        return None
     kind, retry_after = classify_error(exc)
     if kind == "guthaben":
         return ("Mein Claude-Guthaben ist aufgebraucht. Bitte in der Anthropic-Konsole unter Plans and Billing "
@@ -442,6 +464,42 @@ def spoken_error(exc: BaseException) -> str | None:
 
 class Cancelled(Exception):
     """Der Nutzer hat Jarvis unterbrochen."""
+
+
+def _block_type(block) -> str:
+    return block.get("type", "") if isinstance(block, dict) else getattr(block, "type", "")
+
+
+def _is_upload_block(block) -> bool:
+    from . import anhaenge
+
+    return anhaenge.is_attachment_block(block)
+
+
+def _is_turn_start(message: dict) -> bool:
+    """Ein Nutzerzug beginnt mit Text (ggf. mit Anhängen), nicht mit Werkzeugergebnissen."""
+    if message.get("role") != "user":
+        return False
+    content = message.get("content")
+    if isinstance(content, str):
+        return True
+    return isinstance(content, list) and bool(content) and not any(_block_type(b) == "tool_result" for b in content)
+
+
+def _content_size(content) -> int:
+    """Größe für die Kontextkürzung: Bilder/PDF-Originale zählen pauschal statt mit ihrer Base64-Länge."""
+    if isinstance(content, str):
+        return len(content)
+    total = 0
+    for block in content or []:
+        kind = _block_type(block)
+        if kind in ("image", "document"):
+            total += 6000
+        elif kind == "text":
+            total += len(block.get("text", "") if isinstance(block, dict) else getattr(block, "text", ""))
+        else:
+            total += len(str(block))
+    return total
 
 
 class SentenceSplitter:
@@ -523,16 +581,12 @@ class NativeMemoryTool:
 
 class Agent:
     def __init__(self, channel: str = "stimme", model: str | None = None, conversation_id: str = "haupt"):
-        headers = {}
-        workspace = config.get("anthropic_workspace") or __import__("os").getenv("ANTHROPIC_WORKSPACE_ID")
-        if workspace:  # persoenliche Schluessel (sk-ant-usr-...) brauchen die Workspace-ID
-            headers["anthropic-workspace-id"] = workspace
-        # Zeitlimit statt SDK-Standard (10 Minuten): haengt die API, merkt Jarvis es nach spaetestens 60 s.
-        self.client = anthropic.Anthropic(default_headers=headers or None, timeout=60.0, max_retries=1)
         self.channel = channel
         self.conversation_id = conversation_id
-        name = model or config.get("model", "sonnet")
-        self.model = MODELS.get(name, name)
+        # Anbieter + Modell (Anthropic, Moonshot oder Ollama, siehe modelle.py). Zeitlimit statt SDK-Standard
+        # (10 Minuten): haengt die API, merkt Jarvis es nach spaetestens 60 s.
+        self._disabled: set[str] = set()
+        self.set_model(model or config.get("model", "sonnet"))
         self.messages: list = []
         self.lock = threading.Lock()
         self.cancel_event = threading.Event()
@@ -544,13 +598,37 @@ class Agent:
         self._restored_history = self.memory_store.recent_episodes(conversation_id, 24)
         self.reload()
 
+    def set_model(self, name: str) -> None:
+        """Modell wechseln, auch mitten im Gespräch. Bei Anbieterwechsel werden Denkblöcke entfernt: ihre Signatur
+        gilt nur beim erzeugenden Modell; Text und Werkzeugaufrufe bleiben erhalten."""
+        choice = modelle.resolve(name)
+        previous = getattr(self, "choice", None)
+        if previous is not None and (previous.provider != choice.provider or previous.model != choice.model):
+            with self.lock:
+                self.messages[:] = modelle.strip_thinking(self.messages)
+        self.choice = choice
+        self.model = choice.model
+        self._disabled = set()
+        self._client_problem = modelle.problem(choice)
+        try:
+            self.client = modelle.make_client(choice, timeout=60.0, max_retries=1)
+        except Exception as exc:  # fehlender Schlüssel: erst beim Fragen melden, Jarvis startet trotzdem
+            self.client = None
+            self._client_problem = self._client_problem or str(exc)[:200]
+
+    @property
+    def provider(self) -> "modelle.Provider":
+        choice = getattr(self, "choice", None) or modelle.resolve(getattr(self, "model", None))
+        return modelle.PROVIDERS[choice.provider]
+
     def reload(self) -> None:
         from . import skill_laufzeit
 
         self.skills = skill_laufzeit.load_active()  # deaktivierte Skills sind weder im Katalog noch lesbar
         # Voice prompt construction uses a lightweight Agent.__new__ instance.
         # Keep tool registration usable before a full Agent has selected its model.
-        strategy_model = getattr(self, "model", MODELS.get(config.get("model", "sonnet"), config.get("model", "sonnet")))
+        # Gremium und Recherche laufen immer mit Claude (eigene Anthropic-Aufrufe), auch wenn das Gehirn Kimi/Ollama ist.
+        strategy_model = modelle.claude_id(getattr(getattr(self, "choice", None), "key", None))
         self.tools: dict[str, Tool] = {t.name: t for t in all_tools(self.skills, strategy_model)}
         if self.channel != "hintergrund":  # Hintergrundjobs starten keine weiteren Hintergrundjobs
             from . import runtime
@@ -559,7 +637,7 @@ class Agent:
             self.tools[bg.name] = bg
         notes = []
         if google_tools.is_connected():
-            notes.append("Du hast Zugriff auf Google: Gmail, Kalender, Drive, Aufgaben, Kontakte.")
+            notes.append("Du hast Zugriff auf Google: Gmail, Kalender, Drive, Sheets (lesen, erstellen, bearbeiten nur mit Freigabe), Aufgaben, Kontakte.")
         else:
             notes.append("Gmail/Kalender sind NICHT verbunden: erklaere bei Bedarf, dass einmalig "
                          "'python -m jarvis --google-verbinden datei.json' noetig ist.")
@@ -717,13 +795,16 @@ class Agent:
             req["output_config"] = {"effort": effort}
         if not getattr(self, "_no_cache", False):
             req["cache_control"] = {"type": "ephemeral"}  # wandernder Marker für den wachsenden Verlauf (5 min)
-        return req
+        choice = getattr(self, "choice", None) or modelle.resolve(self.model)
+        return modelle.adapt_request(choice, req, getattr(self, "_disabled", set()))
 
     def prewarm(self) -> dict | None:
         """Cache vorwärmen (max_tokens=0): schreibt Werkzeuge + Systemprompt in den Cache, ohne eine Antwort zu
         erzeugen. Gleiche Werkzeuge, Denktiefe und Modell wie echte Anfragen, sonst trifft der Cache nicht."""
         from . import events
 
+        if not self.provider.cache or self.client is None:
+            return None  # ohne Prompt-Caching gibt es nichts vorzuwärmen
         req = self._request()
         req.pop("cache_control", None)  # sonst würde der Platzhalter-Zug gecacht statt des Systemprompts
         req.update(max_tokens=0, messages=[{"role": "user", "content": "warmup"}])
@@ -744,8 +825,10 @@ class Agent:
     def ask(self, text: str, on_sentence: Callable[[str], None] | None = None,
             on_tool: Callable[[str], None] | None = None, on_token: Callable[[str], None] | None = None,
             on_step: Callable[[dict], None] | None = None, job: dict | None = None,
-            cancel_signal: threading.Event | None = None) -> str:
+            cancel_signal: threading.Event | None = None, attachments: list | None = None) -> str:
         """Beantwortet eine Anfrage. Callbacks: on_token (jedes Textstueck), on_sentence (vorlesbarer Abschnitt),
+        on_tool (Werkzeugname), on_step (Schritt-Status fuer die Oberflaeche). `attachments`: Dateianhänge
+        (anhaenge.Attachment) für genau diesen Nutzerzug.
         on_tool (Werkzeugname), on_step (Schritt-Status fuer die Oberflaeche)."""
         from . import jobs as jobs_mod
         from . import telemetry
@@ -769,6 +852,7 @@ class Agent:
             self._partial = []
             self._say, self._filler_done = on_sentence, False  # fuer die Sofort-Reaktion vor Werkzeugen
             self._memory_query = text[:8000]
+            self._attachments = list(attachments or [])
             # Captured for exactly this generation; unlike cancel_event it is
             # never cleared by a newer request. This closes bridge cancel races.
             self._external_cancel = cancel_signal
@@ -908,16 +992,18 @@ class Agent:
         Verlauf, sondern werden bei jedem Zug frisch aus der Runtime als Zustandsvermerk vorangestellt.
         """
         def starts():
-            return [index for index, message in enumerate(self.messages)
-                    if message.get("role") == "user" and isinstance(message.get("content"), str)]
+            return [index for index, message in enumerate(self.messages) if _is_turn_start(message)]
         before = len(self.messages)
         boundaries = starts()
         # Gespraech (Schnellspur): kuerzerer Verlauf = schnellere Antwort; Aelteres findet wissen_suchen.
         keep, max_chars = (8, 28000) if self._fast() else (12, 48000)
+        if any(isinstance(m.get("content"), list) and any(_is_upload_block(b) for b in m["content"])
+               for m in self.messages if m.get("role") == "user"):
+            max_chars += 120_000  # Anhänge (bis 60 000 Zeichen je Datei) sollen Folgefragen überstehen
         if len(boundaries) > keep:
             del self.messages[:boundaries[-keep]]
             boundaries = starts()
-        while len(boundaries) > 1 and sum(len(str(message.get("content", ""))) for message in self.messages) > max_chars:
+        while len(boundaries) > 1 and sum(_content_size(message.get("content", "")) for message in self.messages) > max_chars:
             del self.messages[:boundaries[1]]
             boundaries = starts()
         if len(self.messages) < before:
@@ -1016,8 +1102,18 @@ class Agent:
                 memory = f"<gedaechtnis>\n{recalled}\n</gedaechtnis>\n"
         except Exception as exc:  # Gedächtnis darf eine Antwort nie verhindern
             print(f"[agent] Gedächtnis nicht lesbar: {exc}")
-        self.messages.append({"role": "user",
-                              "content": f"{memory}[{german_date(now.date())}, {now:%H:%M} Uhr]\n{notes}{text}"})
+        content = f"{memory}[{german_date(now.date())}, {now:%H:%M} Uhr]\n{notes}{text}"
+        attached = getattr(self, "_attachments", None) or []
+        self._attachments = []
+        if attached:
+            from . import anhaenge
+
+            # Anhänge zuerst, dann der Text (Empfehlung der Messages-API für Dokumente). Inhalte bleiben nur im
+            # Arbeitsspeicher dieses Verlaufs; ins dauerhafte Gedächtnis geht nur der getippte Text.
+            self.messages.append({"role": "user",
+                                  "content": [*anhaenge.blocks(attached, self.provider), {"type": "text", "text": content}]})
+            return
+        self.messages.append({"role": "user", "content": content})
 
     def _memory_seen(self) -> set:
         if not isinstance(getattr(self, "_memory_sent", None), set):
@@ -1094,6 +1190,8 @@ class Agent:
     def _stream_step(self, splitter: SentenceSplitter, answer: list[str], on_token):
         from . import telemetry
 
+        if self.client is None:
+            raise ProviderNotReady(getattr(self, "_client_problem", None) or "Anbieter nicht eingerichtet.")
         try:
             try:
                 manager = self.client.beta.messages.stream(**self._request())
@@ -1146,21 +1244,36 @@ class Agent:
                     pass
             raise
         except anthropic.BadRequestError as exc:
-            if "cache_control" in str(exc) and not getattr(self, "_no_cache", False):
-                self._no_cache = True
-                return None  # ohne Caching neu versuchen
-            if ("effort" in str(exc) or "output_config" in str(exc)) and not getattr(self, "_no_effort", False):
-                self._no_effort = True
-                return None  # Modell kennt keine Denktiefe: ohne neu versuchen
+            # Ein Extra (Caching, Denktiefe, Beta-Funktion) wird vom Anbieter/Modell abgelehnt: einmal ohne versuchen.
+            feature = modelle.rejected_feature(str(exc))
+            disabled = getattr(self, "_disabled", set())
+            if feature and feature not in disabled:
+                disabled.add(feature)
+                self._disabled = disabled
+                if feature == "cache":
+                    self._no_cache = True
+                from . import events
+
+                events.log("anbieter_extra_aus", modell=self.model, extra=feature)
+                return None
+            if "signature" in str(exc).lower() and not getattr(self, "_thinking_stripped", False):
+                self._thinking_stripped = True  # Denkblock ungültig (z. B. alter Verlauf): einmal ohne Denkblöcke
+                self.messages[:] = modelle.strip_thinking(self.messages)
+                return None
+            exc.jarvis_anbieter = self.provider.id  # type: ignore[attr-defined]
             raise
         except ValueError as exc:
             if self.cancel_event.is_set():
                 raise Cancelled() from exc
             print(f"[agent] Werkzeug-Argumente unlesbar, neuer Versuch: {exc}")
             return None
-        except Exception:
+        except Exception as exc:
             if self.cancel_event.is_set():  # Stream wurde von cancel() geschlossen
                 raise Cancelled() from None
+            try:
+                exc.jarvis_anbieter = self.provider.id  # type: ignore[attr-defined]
+            except Exception:
+                pass
             raise
         finally:
             self._active_stream = None

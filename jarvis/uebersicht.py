@@ -48,20 +48,22 @@ def integrations() -> list[dict]:
 
 
 def agents() -> list[dict]:
-    from .agent import MODELS
+    from . import modelle
 
     model_key = config.get("model", "sonnet") or "sonnet"
+    choice = modelle.resolve(model_key)
+    main_problem = modelle.problem(choice)
     brain = bool(config.get("anthropic_key") or __import__("os").getenv("ANTHROPIC_API_KEY"))
     research_model = config.get("research_model") or model_key
     return [
         {"id": "jarvis", "name": "Jarvis", "rolle": "Hauptagent – Gespräch, Werkzeuge, Freigaben",
-         "modell": MODELS.get(model_key, model_key), "status": "bereit" if brain else "nicht_eingerichtet",
-         "hinweis": "" if brain else "ANTHROPIC_API_KEY fehlt"},
+         "modell": f"{choice.model} ({modelle.PROVIDERS[choice.provider].name})",
+         "status": "bereit" if main_problem is None else "nicht_eingerichtet", "hinweis": main_problem or ""},
         {"id": "gremium", "name": "Unternehmer-Fachgremium", "rolle": "Drei unabhängige Analysen (Gründer- oder SaaS-Gremium)",
-         "modell": MODELS.get(config.get("strategy_model") or model_key, model_key), "status": "bereit" if brain else "nicht_eingerichtet",
+         "modell": modelle.claude_id(config.get("strategy_model") or model_key), "status": "bereit" if brain else "nicht_eingerichtet",
          "hinweis": "Wird bei strategischen Fragen von Jarvis aufgerufen"},
         {"id": "recherche", "name": "Tiefenrecherche", "rolle": "Mehrstufige Websuche mit Quellen",
-         "modell": MODELS.get(research_model, research_model), "status": "bereit" if brain else "nicht_eingerichtet",
+         "modell": modelle.claude_id(research_model), "status": "bereit" if brain else "nicht_eingerichtet",
          "hinweis": "Dauert 1–3 Minuten je Auftrag"},
         {"id": "echtzeit", "name": "Sprachkern (ElevenLabs)", "rolle": "Echtzeit-Gespräch mit Unterbrechen",
          "modell": "ElevenLabs Agents", "status": _ok(bool(config.get("elevenlabs_key"))),

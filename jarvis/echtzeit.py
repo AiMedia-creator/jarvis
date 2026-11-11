@@ -42,11 +42,14 @@ def status(model_id: str | None = None) -> dict:
                 "eleven_tts_model": "demo", "eleven_tts_modelle": [], "demo": True}
     from .eleven_agent import TTS_MODELS
 
-    model_id = model_id or MODELS.get(config.get("model") or "sonnet")
-    model_key = next((k for k, v in MODELS.items() if v == model_id), "sonnet")
+    from . import modelle
+
+    choice = modelle.current()
     return {"google": google.is_connected(), "hubspot": hubspot.is_configured(),
             "elevenlabs": tts.has_eleven(), "elevenlabs_problem": tts.eleven_problem,
-            "modell": model_id, "modell_key": model_key, "modelle": list(MODELS),
+            "modell": model_id or choice.model, "modell_key": choice.key,
+            "modelle": [c["key"] for c in modelle.overview(check_ollama=False)],
+            "modell_auswahl": modelle.overview(), "anbieter": modelle.PROVIDERS[choice.provider].name,
             "stimme": tts.current_voice(), "tempo": tts.speed(),
             "stimmen": tts.voices(), "name": config.get("owner_name", "Omar"),
             "sprachkern_verfuegbar": eleven_available(), "sprachkern_problem": eleven_problem(),
@@ -54,9 +57,8 @@ def status(model_id: str | None = None) -> dict:
 
 
 def save_settings(data: dict, set_model: Callable[[str], None] | None = None) -> dict:
-    """Stimme, Tempo, Stimmmodell und Claude-Modell speichern. `set_model` stellt laufende Agenten sofort um."""
-    from . import tts
-    from .agent import MODELS
+    """Stimme, Tempo, Stimmmodell und Gehirn-Modell speichern. `set_model` stellt laufende Agenten sofort um."""
+    from . import modelle, tts
 
     if not isinstance(data, dict):
         raise ValueError("ungültige Einstellungen")
@@ -78,12 +80,16 @@ def save_settings(data: dict, set_model: Callable[[str], None] | None = None) ->
     model_id = None
     if "modell" in data:
         key = str(data["modell"])
-        if key not in MODELS:
+        choice = modelle.catalog().get(key)
+        if choice is None:
             raise ValueError("unbekanntes Modell")
+        reason = modelle.problem(choice)
+        if reason:  # nicht umstellen, wenn der Anbieter nicht eingerichtet ist (sonst wäre Jarvis danach stumm)
+            raise ValueError(f"{choice.label} ist nicht eingerichtet: {reason}")
         config.save("model", key)
-        model_id = MODELS[key]
+        model_id = choice.model
         if set_model:
-            set_model(model_id)
+            set_model(key)
     return status(model_id)
 
 

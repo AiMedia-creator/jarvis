@@ -115,6 +115,8 @@ export type WorkspaceProps = {
   voicePrefs?: VoicePrefs;
   onVoicePrefs?: (prefs: VoicePrefs) => void;
   onReset?: () => void;
+  /** Raum = Gespräch; nötig für Dateianhänge. */
+  room?: string;
 };
 
 export default function CommandView({
@@ -122,7 +124,7 @@ export default function CommandView({
   transcripts = [], audio = null, micOn = false, onMicChange = () => undefined, onLog = () => undefined, onStop = () => undefined,
   telemetry: givenTelemetry, muted = false, onMutedChange = () => undefined,
   voiceMode = "studio", transcriptSave, onRetryTranscripts = () => undefined, onStartRealtime = async () => undefined, onStopRealtime = async () => undefined, getRealtime = () => null,
-  voicePrefs = DEFAULT_PREFS, onVoicePrefs = () => undefined, onReset = () => undefined,
+  voicePrefs = DEFAULT_PREFS, onVoicePrefs = () => undefined, onReset = () => undefined, room,
 }: WorkspaceProps) {
   const [ownTelemetry] = useState(() => new Telemetry());
   const telemetry = givenTelemetry ?? ownTelemetry;
@@ -645,7 +647,7 @@ export default function CommandView({
               settings={settings} onSettings={setSettings} voiceMode={voiceMode} onStartRealtime={onStartRealtime}
               onStopRealtime={onStopRealtime} getRealtime={getRealtime} prefs={voicePrefs} onPrefs={onVoicePrefs} onReset={onReset}
               platform={platform} jobs={agentData?.jobs ?? null} jobsError={agentError} busyJob={capBusy}
-              onOpenJob={openJob} onCancelJob={(id) => void cancelJob(id)} focusSignal={focusComposer} />
+              onOpenJob={openJob} onCancelJob={(id) => void cancelJob(id)} focusSignal={focusComposer} room={room} />
           )}
           {section === "freigaben" && <ApprovalsPanel items={approvals} canDecide={canEdit} onDecide={decide} query={search} />}
         </div>

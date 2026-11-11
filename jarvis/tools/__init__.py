@@ -117,6 +117,9 @@ def all_tools(skills_map, strategy_model: str | None = None) -> list[Tool]:
     # Laufzeitfähigkeiten (Registry): GitHub, Skill-Aufträge, Cloud-Skills; auftrag_anlegen kommt über orders.tools().
     tools.extend(t for t in faehigkeiten.tools() if t.name != "auftrag_anlegen")
     tools.extend(mcp_client.tools())  # Werkzeuge externer MCP-Server (~/.jarvis/mcp.json), Namen mit Praefix mcp_
+    from .. import browser
+
+    tools.extend(browser.tools())  # echter Chrome über das installierte browser-harness (nur wenn eingeschaltet)
     # Alles, was nach aussen wirkt, laeuft ueber Vorlage + Freigabe.
     return [approvals.wrap(t) if "bestaetigt_vom_nutzer" in t.properties else t for t in tools]
 

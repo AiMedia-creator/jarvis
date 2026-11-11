@@ -690,6 +690,7 @@ export function App() {
             voicePrefs={voicePrefs}
             onVoicePrefs={setVoicePrefs}
             onReset={resetConversation}
+            room={room}
           />
         </Suspense>
         {config.demo && <div className="demo-mark">Demo</div>}

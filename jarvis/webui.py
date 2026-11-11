@@ -197,8 +197,8 @@ def _eleven_problem():
 def save_settings(data: dict) -> dict:
     from . import echtzeit
 
-    def set_model(model_id: str) -> None:
-        agent().model = model_id
+    def set_model(key: str) -> None:
+        agent().set_model(key)
 
     return echtzeit.save_settings(data, set_model)
 

@@ -101,7 +101,20 @@ export type Settings = {
   elevenlabs: boolean; elevenlabs_problem: string | null;
   sprachkern_verfuegbar: boolean; sprachkern_problem: string | null;
   eleven_tts_model: string; eleven_tts_modelle: string[]; google: boolean; hubspot: boolean; demo?: boolean;
+  /** Auswahl über alle Anbieter (Anthropic, Moonshot, Ollama) mit Grund, falls nicht eingerichtet. Fehlt bei älterem Server. */
+  modell_auswahl?: ModelChoice[]; anbieter?: string;
 };
+export type ModelChoice = {
+  key: string; anbieter: "anthropic" | "moonshot" | "ollama"; anbieter_name: string; modell: string; name: string;
+  verfuegbar: boolean; problem: string | null; hinweis: string;
+};
+/** Dateianhang im Chat (liegt bis zur nächsten Nachricht nur im Arbeitsspeicher der Python-Brücke). */
+export type Attachment = {
+  id: string; name: string; art: string; typ: string; groesse: number; gekuerzt: boolean; detail: string; zeichen: number;
+  status: "bereit"; hinweis?: string;
+};
+export const ATTACHMENT_ACCEPT = ".pdf,.txt,.md,.csv,.docx,.xlsx,.png,.jpg,.jpeg,.gif,.webp";
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export type CallProject = { id: string; version: number; name: string; crm: string; zielgruppe: string; leitfaden: string; regeln: string; notiz: string; aktiv: boolean };
 export type CallRecord = {
   id: string; projekt_id: string; erstellt: number; lead_name: string; firma: string; rolle: string; telefon_status: string;
@@ -288,6 +301,20 @@ export const api = {
     call<Record<string, any>>("POST", `/api/gedaechtnis/${aktion}`, body),
   transcript: (rolle: "user" | "agent", text: string, ref: string) =>
     call<{ id: string | null; status: string; duplicate?: boolean }>("POST", "/api/transkript", { rolle, text, ref }),
+  /** Rohe Bytes (kein JSON, kein Base64): Java begrenzt auf 10 MB, Python prüft Typ und Inhalt. */
+  uploadAttachment: async (room: string, file: File): Promise<{ anhang: Attachment }> => {
+    const response = await fetch(`/api/anhaenge?raum=${encodeURIComponent(room)}&name=${encodeURIComponent(file.name)}`, {
+      method: "POST", body: file, credentials: "same-origin",
+      headers: { "X-Jarvis": "1", "Content-Type": file.type || "application/octet-stream" },
+    });
+    let data: any = null;
+    try { data = await response.json(); } catch { data = null; }
+    if (!response.ok) throw new ApiError(response.status, data?.fehler || `Hochladen fehlgeschlagen (${response.status})`, data);
+    return data;
+  },
+  attachments: (room: string) => call<{ anhaenge: Attachment[] }>("GET", `/api/anhaenge?raum=${encodeURIComponent(room)}`),
+  removeAttachment: (room: string, id: string) =>
+    call<{ entfernt: boolean }>("DELETE", `/api/anhaenge/${encodeURIComponent(id)}?raum=${encodeURIComponent(room)}`),
   decide: (id: string, aktion: "freigeben" | "verwerfen") =>
     call<{ ergebnis: string }>("POST", `/api/approvals/${encodeURIComponent(id)}/${aktion}`, {}),
 };

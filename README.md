@@ -1,5 +1,11 @@
 # Jarvis V3 – zusammengeführtes Projekt
 
+> **Neu (11.11.2026): austauschbares Gehirn, Google Sheets, Dateianhänge, Browser.** Modell und Anbieter wählbar
+> (Claude Opus/Sonnet/Haiku 5.5 über Anthropic, Kimi über die Moonshot-API, lokale Modelle über Ollama), Google Sheets
+> lesen/erstellen/bearbeiten (Bearbeiten nur mit Freigabe), Dateien (PDF, TXT, CSV, DOCX, XLSX, Bilder) im Command
+> Center anhängen, echter Chrome über das installierte browser-harness (Klicken/Tippen nur mit Freigabe, standardmäßig
+> aus). Einrichtung: `docs/MODELLE-GOOGLE-ANHAENGE-BROWSER.md`, Beispielwerte: `.env.example`, `jarvis.example.json`.
+
 > **Neu (08.11.2026): Übernahme aus OpenJarvis.** Schleifenwächter, Injection-Scanner mit deutschen Mustern,
 > Schlüssel-Schwärzung, Tiefenrecherche mit Quellen, MCP-Client, agentskills.io-Skills mit Import aus
 > Hermes/OpenClaw/GitHub, neue Werkzeuge (Rechner, Wetter, Hacker News, GitHub, PDF, Apple Notizen, Obsidian) und

@@ -136,10 +136,14 @@ def payload_hash(tool: str, key: str) -> str:
 def _text_of(content) -> str:
     if isinstance(content, str):
         return content
+    from .anhaenge import is_attachment_block
+
     out = []
     for block in content or []:
         kind = block.get("type") if isinstance(block, dict) else getattr(block, "type", "")
-        if kind == "text":
+        if is_attachment_block(block):
+            out.append("[Anhang]")  # Dateiinhalte nie in den dauerhaften Checkpoint schreiben
+        elif kind == "text":
             out.append(block.get("text", "") if isinstance(block, dict) else getattr(block, "text", ""))
         elif kind == "tool_use":
             out.append(f"[Werkzeug {block.get('name') if isinstance(block, dict) else getattr(block, 'name', '')}]")

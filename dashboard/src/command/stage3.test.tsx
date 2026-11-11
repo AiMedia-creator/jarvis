@@ -106,4 +106,23 @@ describe("Umschalter Studio | Echtzeit", () => {
     expect(dialog.textContent).toContain("Push-to-talk");
     act(() => root.unmount());
   });
+
+  it("zeigt alle Anbieter und sperrt nicht eingerichtete mit Begründung", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const choices = [
+      { key: "opus", anbieter: "anthropic", anbieter_name: "Anthropic (Claude)", modell: "claude-opus-5-5", name: "Claude Opus 5.5", verfuegbar: true, problem: null, hinweis: "" },
+      { key: "kimi", anbieter: "moonshot", anbieter_name: "Moonshot (Kimi)", modell: "kimi-k3.1-pro", name: "Kimi K3.1 Pro", verfuegbar: false, problem: "MOONSHOT_API_KEY fehlt.", hinweis: "" },
+      { key: "ollama", anbieter: "ollama", anbieter_name: "Ollama (lokal)", modell: "", name: "Ollama: kein Modell gewählt", verfuegbar: false, problem: "Kein Ollama-Modell gewählt", hinweis: "" },
+    ];
+    await act(async () => root.render(<CommandCenter {...base} settings={{ ...settings, modell_key: "opus", modell_auswahl: choices as any, anbieter: "Anthropic (Claude)" }} />));
+    await act(async () => [...host.querySelectorAll<HTMLButtonElement>(".cc-bar button")].find((b) => b.textContent === "Einstellungen")!.click());
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>(".cc-models button")];
+    expect(buttons.map((b) => b.querySelector("strong")!.textContent)).toEqual(["Claude Opus 5.5", "Kimi K3.1 Pro", "Ollama: kein Modell gewählt"]);
+    expect(buttons[0].getAttribute("aria-checked")).toBe("true");
+    expect(buttons[1].disabled).toBe(true);
+    expect(buttons[1].textContent).toContain("MOONSHOT_API_KEY fehlt.");
+    act(() => root.unmount());
+  });
 });

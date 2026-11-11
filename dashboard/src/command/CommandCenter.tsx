@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { AudioEngine } from "../audio";
 import type { Role, Transcript } from "../types";
-import type { AgentJob, Approval, Automations, Platform, Settings } from "./api";
+import { api, ATTACHMENT_ACCEPT, MAX_ATTACHMENT_BYTES, type AgentJob, type Approval, type Automations, type Platform, type Settings } from "./api";
+import { Icon } from "./icons";
 import { duration, isActive, jobState } from "./AgentCenter";
 import { remaining } from "./model";
 import type { RealtimeSession } from "./realtime";
@@ -121,7 +122,12 @@ export type CommandCenterProps = {
   onCancelJob?: (id: string) => void;
   /** Erhöht sich, wenn die Eingabe den Fokus bekommen soll (⌘K). */
   focusSignal?: number;
+  /** Raum (= Gespräch) für Dateianhänge; ohne Raum ist Anhängen aus. */
+  room?: string;
 };
+
+type PendingFile = { key: string; name: string; size: number; status: "laedt" | "bereit" | "fehler"; id?: string; info?: string };
+const fmtSize = (n: number) => n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1024 / 1024).toFixed(1).replace(".", ",")} MB`;
 
 /** Einstiege für ein leeres Gespräch: füllen nur das Feld. */
 const STARTERS = [
@@ -138,7 +144,7 @@ export function CommandCenter({
   onStartRealtime = async () => undefined, onStopRealtime = async () => undefined, getRealtime = () => null,
   prefs = { pause: 1.2, barge: "frei", talkMode: "frei" }, onPrefs = () => undefined, onReset = () => undefined,
   platform = null, jobs = null, jobsError = null, busyJob = null,
-  onOpenJob = () => undefined, onCancelJob = () => undefined, focusSignal = 0,
+  onOpenJob = () => undefined, onCancelJob = () => undefined, focusSignal = 0, room,
 }: CommandCenterProps) {
   const toolLabel = (name: string) => platform?.faehigkeiten.find((c) => c.name === name)?.titel ?? name;
   const realtimeMode = voiceMode === "echtzeit";
@@ -236,12 +242,40 @@ export function CommandCenter({
   }, [audio, micOn, owner, ptt, toggleMic]);
   const pttUp = useCallback(() => { if (ptt) audio?.pttUp(); }, [audio, ptt]);
 
+  // --- Dateianhänge: sofort hochladen (Prüfung auf dem Server), mit der nächsten Nachricht senden ---
+  const [files, setFiles] = useState<PendingFile[]>([]);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const uploading = files.some((f) => f.status === "laedt");
+  const ready = files.filter((f) => f.status === "bereit");
+  const canAttach = owner && !!room;
+  const addFiles = useCallback((list: FileList | File[]) => {
+    if (!room) return;
+    for (const file of Array.from(list)) {
+      const key = `${file.name}-${file.size}-${Math.random().toString(36).slice(2, 8)}`;
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        setFiles((old) => [...old, { key, name: file.name, size: file.size, status: "fehler", info: "Zu groß (höchstens 10 MB)." }]);
+        continue;
+      }
+      setFiles((old) => [...old, { key, name: file.name, size: file.size, status: "laedt" }]);
+      api.uploadAttachment(room, file)
+        .then(({ anhang }) => setFiles((old) => old.map((f) => f.key === key
+          ? { ...f, status: "bereit", id: anhang.id, info: anhang.hinweis || `${anhang.art}${anhang.detail ? ` · ${anhang.detail}` : ""}` } : f)))
+        .catch((error) => setFiles((old) => old.map((f) => f.key === key
+          ? { ...f, status: "fehler", info: error instanceof Error ? error.message : "Hochladen fehlgeschlagen." } : f)));
+    }
+  }, [room]);
+  const removeFile = useCallback((file: PendingFile) => {
+    setFiles((old) => old.filter((f) => f.key !== file.key));
+    if (file.id && room) void api.removeAttachment(room, file.id).catch(() => setNotice("Anhang konnte auf dem Server nicht entfernt werden – er verfällt nach 30 Minuten."));
+  }, [room]);
+
   const send = useCallback(() => {
-    const value = text.trim();
-    if (!value || !owner) return;
+    const value = text.trim() || (ready.length ? "Bitte sieh dir die angehängten Dateien an." : "");
+    if (!value || !owner || uploading) return;
     onAsk(value);
     setText("");
-  }, [onAsk, owner, text]);
+    setFiles([]); // der Server hat die Anhänge mit dieser Nachricht übernommen
+  }, [onAsk, owner, ready.length, text, uploading]);
 
   const canCancel = derived.active === "hoert" || derived.active === "spricht" || derived.active === "denkt"
     || derived.also.includes("spricht") || derived.also.includes("denkt");
@@ -367,7 +401,9 @@ export function CommandCenter({
 
       <div className="cc-center-grid">
         <div className="cc-center-main">
-          <section className="cc-thread" ref={threadRef} aria-label="Gespräch mit Jarvis" aria-live="polite" tabIndex={0}>
+          <section className="cc-thread" ref={threadRef} aria-label="Gespräch mit Jarvis" aria-live="polite" tabIndex={0}
+            onDragOver={(e) => { if (canAttach && e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
+            onDrop={(e) => { if (!canAttach || !e.dataTransfer.files.length) return; e.preventDefault(); addFiles(e.dataTransfer.files); }}>
             {lineCount === 0 ? (
               <div className="cc-thread-empty">
                 <h2>Was soll Jarvis erledigen?</h2>
@@ -513,6 +549,20 @@ export function CommandCenter({
       </div>
 
       <form className="cc-transport" aria-label="Eingabe" onSubmit={(e) => { e.preventDefault(); send(); }}>
+        {files.length > 0 && (
+          <ul className="cc-files" aria-label="Anhänge für die nächste Nachricht" aria-live="polite">
+            {files.map((f) => (
+              <li key={f.key} className={`cc-file ${f.status}`}>
+                <Icon name="attach" />
+                <span className="cc-file-main"><strong>{f.name}</strong>
+                  <span>{f.status === "laedt" ? "wird geprüft …" : f.status === "fehler" ? f.info : `${fmtSize(f.size)}${f.info ? ` · ${f.info}` : ""}`}</span></span>
+                <button type="button" className="cc-file-x" onClick={() => removeFile(f)} aria-label={`Anhang entfernen: ${f.name}`}>
+                  <Icon name="close" /></button>
+              </li>
+            ))}
+            {ready.length > 0 && <li className="cc-file-note">Geht mit der nächsten Nachricht an Jarvis – auch bei Sprache.</li>}
+          </ul>
+        )}
         {realtimeMode ? (
           <button type="button" className="cc-tbtn on" onClick={() => void toggleMic()} disabled={!owner || switching}>
             <Glyph state="hoert" /> Echtzeit beenden
@@ -538,7 +588,13 @@ export function CommandCenter({
             }} />
           <kbd>/</kbd>
         </label>
-        <button type="submit" className="cc-tbtn primary" disabled={!owner || !text.trim()}>Senden <kbd>⏎</kbd></button>
+        <input ref={fileInput} type="file" multiple accept={ATTACHMENT_ACCEPT} hidden
+          onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
+        <button type="button" className="cc-tbtn cc-attach" onClick={() => fileInput.current?.click()} disabled={!canAttach}
+          aria-label="Datei anhängen (PDF, TXT, CSV, DOCX, XLSX, Bilder)" title="Datei anhängen (PDF, TXT, CSV, DOCX, XLSX, Bilder; höchstens 10 MB)">
+          <Icon name="attach" /></button>
+        <button type="submit" className="cc-tbtn primary" disabled={!owner || uploading || (!text.trim() && !ready.length)}>
+          {uploading ? "Prüfe Datei …" : "Senden"} <kbd>⏎</kbd></button>
         {!realtimeMode && <button type="button" className="cc-tbtn" disabled={!owner || !canCancel} onClick={onStop}>Abbrechen <kbd>Esc</kbd></button>}
         <button type="button" className={`cc-tbtn ${muted ? "on" : ""}`} aria-pressed={muted} onClick={() => onMutedChange(!muted)}>
           {muted ? "Stumm an" : "Stumm"} <kbd>S</kbd>

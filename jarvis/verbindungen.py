@@ -23,6 +23,7 @@ GOOGLE_DIENSTE = {
     "gmail": ("Gmail (lesen, Entwürfe)", {"https://www.googleapis.com/auth/gmail.modify", "https://mail.google.com/"}),
     "kalender": ("Kalender", {"https://www.googleapis.com/auth/calendar"}),
     "drive": ("Drive (lesen)", {"https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive"}),
+    "sheets": ("Sheets (lesen, eigene Tabellen bearbeiten)", {"https://www.googleapis.com/auth/drive.file"}),
     "aufgaben": ("Aufgaben", {"https://www.googleapis.com/auth/tasks"}),
     "kontakte": ("Kontakte (lesen)", {"https://www.googleapis.com/auth/contacts.readonly"}),
 }
@@ -92,7 +93,10 @@ def google_status(force: bool = False) -> dict:
                          details=[f"Erteilt: {', '.join(aktiv) or 'nichts'}", f"Fehlt: {', '.join(fehlend)}"],
                          hinweis="Angemeldet, aber nicht alle Berechtigungen erteilt.", schritte=[_GOOGLE_NEU])
         return _item(*base, "verbunden", "live", dienste=dienste,
-                     details=[f"Erteilt: {', '.join(aktiv)}", "Gmail: Jarvis erstellt Entwürfe; Senden nur nach deiner Freigabe."])
+                     details=[f"Erteilt: {', '.join(aktiv)}", "Gmail: Jarvis erstellt Entwürfe; Senden nur nach deiner Freigabe.",
+                              "Fremde Tabellen bearbeiten: " + ("erlaubt (nur mit Freigabe)" if {
+                                  "https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"} & granted
+                                  else "nicht erteilt (optional, beim Verbinden das Sheets-Häkchen setzen)")])
 
     return _cached("google", check, force)
 
@@ -190,12 +194,32 @@ def uebersicht(force: bool = False) -> dict:
     from . import github_quelle, mcp_client, uebersicht as status_mod
     from .tools import hubspot, telegram
 
+    from . import browser, modelle
+
     items: list[dict] = []
-    brain = bool(config.get("anthropic_key"))
-    items.append(_item("anthropic", "Claude (Gehirn)", "Antworten, Agenten, Recherche",
-                       "verbunden" if brain else "nicht_eingerichtet", "konfiguration",
-                       details=["Schlüssel hinterlegt; jede Antwort im Gespräch ist der Live-Beweis."] if brain else [],
-                       schritte=[] if brain else ["console.anthropic.com → API Keys; lokal als ANTHROPIC_API_KEY hinterlegen."]))
+    current = modelle.current()
+    for provider in modelle.PROVIDERS.values():
+        has_key = (not provider.needs_key) or bool(modelle.api_key(provider))
+        active = provider.id == current.provider
+        reason = modelle.problem(current) if active else None
+        zweck = ("Gehirn – aktuell gewählt: " + current.model) if active else (
+            "Antworten, Agenten, Recherche (Claude-Werkzeuge)" if provider.id == "anthropic" else "Alternatives Gehirn")
+        steps = {"anthropic": ["console.anthropic.com → API Keys; lokal als ANTHROPIC_API_KEY hinterlegen."],
+                 "moonshot": ["platform.kimi.ai → API Keys; lokal als MOONSHOT_API_KEY hinterlegen, Jarvis neu starten."],
+                 "ollama": ["Ollama-App starten, Modell laden (ollama pull <modell>), JARVIS_OLLAMA_MODEL=<modell> setzen."]}[provider.id]
+        if provider.id == "ollama":  # lokal: wirklich nachsehen, ob Ollama läuft und das Modell da ist
+            choice = modelle.catalog()["ollama"]
+            row = next(r for r in modelle.overview() if r["key"] == "ollama")
+            reason = row["problem"] if (active or choice.model) else None
+            has_key = bool(choice.model) and row["verfuegbar"]
+        state = ("verbunden" if has_key and not reason else "unvollstaendig" if active or reason else "nicht_eingerichtet")
+        items.append(_item(provider.id, provider.name, zweck, state, "konfiguration",
+                           details=([f"Schlüssel hinterlegt (nicht live geprüft)."] if provider.needs_key and has_key else [])
+                           + ([provider.hinweis] if provider.hinweis else []),
+                           hinweis=reason or "", schritte=[] if state == "verbunden" else steps))
+    bstatus = browser.status()
+    items.append(_item("browser", "Browser (browser-harness)", "Echten Chrome steuern – Klicken/Tippen nur nach Freigabe",
+                       bstatus["zustand"], "konfiguration", hinweis=bstatus["hinweis"], schritte=bstatus["schritte"]))
     for ident, name, fn in (("google", "Google", google_status), ("elevenlabs", "ElevenLabs", eleven_status)):
         try:
             items.append(fn(force))

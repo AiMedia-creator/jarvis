@@ -224,6 +224,56 @@ public final class ApiController {
         return write(key, body == null ? Mono.empty() : body, exchange);
     }
 
+    // --- Dateianhänge im Chat: roher Body mit fester Obergrenze, nur im Arbeitsspeicher, Prüfung in Python ---
+
+    /** Obergrenze je Datei (muss zu jarvis/anhaenge.py MAX_FILE passen). */
+    static final int MAX_UPLOAD = 10 * 1024 * 1024;
+
+    @PostMapping("/api/anhaenge")
+    public Mono<ResponseEntity<?>> uploadAttachment(@RequestParam(defaultValue = "") String raum, @RequestParam(defaultValue = "") String name,
+                                                    ServerWebExchange exchange) {
+        if (!writeAllowed(exchange)) return Mono.just(ResponseEntity.status(403).body(Map.of("fehler", "Session, Origin und X-Jarvis erforderlich.")));
+        if (!ID.matcher(raum).matches() || name.isBlank() || name.length() > 200)
+            return Mono.just(ResponseEntity.badRequest().body(Map.of("fehler", "Ungültiger Raum oder Dateiname.")));
+        long declared = exchange.getRequest().getHeaders().getContentLength();
+        if (declared > MAX_UPLOAD) return Mono.just(tooLarge());
+        if (bridge == null) return Mono.just(ResponseEntity.status(503).body(Map.of("fehler", "Python-Bridge nicht aktiv.")));
+        String path = "/internal/anhaenge?conversation_id=" + PythonBridgeProvider.query(raum) + "&name=" + PythonBridgeProvider.query(name);
+        return org.springframework.core.io.buffer.DataBufferUtils.join(exchange.getRequest().getBody(), MAX_UPLOAD)
+                .map(buffer -> {
+                    byte[] bytes = new byte[buffer.readableByteCount()];
+                    buffer.read(bytes);
+                    org.springframework.core.io.buffer.DataBufferUtils.release(buffer);
+                    return bytes;
+                })
+                .defaultIfEmpty(new byte[0])
+                .flatMap(bytes -> bytes.length == 0
+                        ? Mono.just((ResponseEntity<?>) ResponseEntity.badRequest().body(Map.of("fehler", "Die Datei ist leer.")))
+                        : bridge.upload(path, bytes).<ResponseEntity<?>>map(value -> ResponseEntity.status(value.getStatusCode())
+                                .header(HttpHeaders.CACHE_CONTROL, "no-store").body(value.getBody())))
+                .onErrorResume(org.springframework.core.io.buffer.DataBufferLimitException.class, error -> Mono.just(tooLarge()))
+                .onErrorResume(error -> Mono.just(ResponseEntity.status(502).body(Map.of("fehler", "Bridge nicht erreichbar."))));
+    }
+
+    private static ResponseEntity<?> tooLarge() {
+        return ResponseEntity.status(413).body(Map.of("fehler", "Die Datei ist zu groß (höchstens " + (MAX_UPLOAD / (1024 * 1024)) + " MB)."));
+    }
+
+    @GetMapping("/api/anhaenge")
+    public Mono<ResponseEntity<?>> attachments(@RequestParam(defaultValue = "") String raum, ServerWebExchange exchange) {
+        if (!sessions.authorized(exchange)) return Mono.just(ResponseEntity.status(401).body(Map.of("fehler", "Session erforderlich.")));
+        if (!ID.matcher(raum).matches()) return Mono.just(ResponseEntity.badRequest().body(Map.of("fehler", "Ungültiger Raum.")));
+        return forward("GET", "/internal/anhaenge?conversation_id=" + PythonBridgeProvider.query(raum), null);
+    }
+
+    @DeleteMapping("/api/anhaenge/{id}")
+    public Mono<ResponseEntity<?>> removeAttachment(@PathVariable String id, @RequestParam(defaultValue = "") String raum, ServerWebExchange exchange) {
+        if (!writeAllowed(exchange)) return Mono.just(ResponseEntity.status(403).body(Map.of("fehler", "Session, Origin und X-Jarvis erforderlich.")));
+        if (!ID.matcher(raum).matches() || !id.matches("anh_[a-f0-9]{24}"))
+            return Mono.just(ResponseEntity.badRequest().body(Map.of("fehler", "Ungültiger Anhang.")));
+        return forward("DELETE", "/internal/anhaenge/" + id + "?conversation_id=" + PythonBridgeProvider.query(raum), null);
+    }
+
     /** Anruf-Copilot: Projekte, Kennzahlen, letzte Anrufe (nur lesend). */
     @GetMapping("/api/anrufe")
     public Mono<ResponseEntity<?>> anrufe(@RequestParam(defaultValue = "7") int tage, ServerWebExchange exchange) {

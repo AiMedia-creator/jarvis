@@ -35,8 +35,8 @@ MAX_CONTEXT = 6000
 
 def _model(value):
     name = value or config.get("strategy_model") or config.get("model", "sonnet") or "sonnet"
-    from .agent import MODELS
-    return MODELS.get(name, name)
+    from . import modelle
+    return modelle.claude_id(name)  # Gremium ruft Claude direkt auf, auch wenn das Gehirn Kimi/Ollama ist
 
 
 def _prompt_rules():

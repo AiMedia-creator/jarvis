@@ -48,13 +48,15 @@ def output_dir() -> Path:
 
 def run(skill: str, task: str, client=None, check=lambda: None, progress=lambda text: None) -> dict:
     """Führt eine erlaubte Anthropic-Skill aus und lädt erzeugte Dateien herunter."""
-    from .agent import MODELS, make_client
+    from .agent import make_client
 
     skill = skill.strip().lower()
     if skill not in allowed():
         raise ValueError(f"Cloud-Skill '{skill}' ist nicht freigeschaltet (erlaubt: {', '.join(allowed()) or 'keine'}).")
     client = client or make_client(timeout=300.0)
-    model = MODELS.get(config.get("model") or "haiku", config.get("model") or "claude-haiku-5-5")
+    from . import modelle
+
+    model = modelle.claude_id()  # Cloud-Skills gibt es nur bei Anthropic
     messages = [{"role": "user", "content": task[:8000]}]
     container: dict = {"skills": [{"type": "anthropic", "skill_id": skill, "version": "latest"}]}
     texts, file_ids = [], []

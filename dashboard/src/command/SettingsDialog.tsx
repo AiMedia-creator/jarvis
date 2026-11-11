@@ -98,14 +98,29 @@ export function SettingsDialog({ open, onClose, prefs, onPrefs, settings, onSett
                 onKeyUp={(e) => { if (e.key.startsWith("Arrow")) void save({ tempo: Number((e.target as HTMLInputElement).value) }, "Sprechtempo"); }} />
             </label>
             <fieldset>
-              <legend>Gehirn (Claude-Modell)</legend>
-              <div className="cc-seg-group" role="radiogroup">
-                {settings.modelle.map((m) => (
-                  <button key={m} type="button" role="radio" aria-checked={settings.modell_key === m} disabled={disabled}
-                    className={settings.modell_key === m ? "on" : ""} onClick={() => void save({ modell: m }, "Modell")}>{MODEL_LABEL[m] ?? m}</button>
-                ))}
-              </div>
-              <span className="cc-hint">Aktuell: {settings.modell}</span>
+              <legend>Gehirn (Modell und Anbieter)</legend>
+              {settings.modell_auswahl?.length ? (
+                <ul className="cc-models" role="radiogroup" aria-label="Modell">
+                  {settings.modell_auswahl.map((m) => (
+                    <li key={m.key}>
+                      <button type="button" role="radio" aria-checked={settings.modell_key === m.key}
+                        disabled={disabled || (!m.verfuegbar && settings.modell_key !== m.key)}
+                        className={settings.modell_key === m.key ? "on" : ""} onClick={() => void save({ modell: m.key }, "Modell")}>
+                        <span><strong>{m.name}</strong><small>{m.anbieter_name}{m.modell && m.anbieter === "ollama" ? "" : ` · ${m.modell}`}</small></span>
+                        {!m.verfuegbar && <em>{m.problem}</em>}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="cc-seg-group" role="radiogroup">
+                  {settings.modelle.map((m) => (
+                    <button key={m} type="button" role="radio" aria-checked={settings.modell_key === m} disabled={disabled}
+                      className={settings.modell_key === m ? "on" : ""} onClick={() => void save({ modell: m }, "Modell")}>{MODEL_LABEL[m] ?? m}</button>
+                  ))}
+                </div>
+              )}
+              <span className="cc-hint">Aktuell: {settings.modell}{settings.anbieter ? ` (${settings.anbieter})` : ""}. Schlüssel liegen nur in Umgebungsvariablen, nie hier.</span>
             </fieldset>
             <label>Stimmqualität im Echtzeit-Modus
               <select value={settings.eleven_tts_model} disabled={disabled || !settings.eleven_tts_modelle.length}

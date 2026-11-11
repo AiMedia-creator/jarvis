@@ -39,10 +39,13 @@ READ = {
     "live_kamera", "kamera_schliessen",  # zeigen nur eine Ansicht in der Oberflaeche
     "github_suchen",  # oeffentliche Suche, nur lesend
     "projekt_liste", "anruf_karte", "anruf_kennzahlen", "content_liste",  # Anruf-Copilot, nur lesend
+    "sheet_lesen",  # Google Sheets, nur lesend
+    "browser_seite", "browser_bild", "browser_tabs", "browser_scrollen",  # Chrome lesen/scrollen (browser.py)
 }
 # MCP-Werkzeuge, die in ~/.jarvis/mcp.json als "nur_lesen" markiert sind, meldet mcp_client hier an.
 MCP_READ: set[str] = set()
-LOCAL = {"seite_oeffnen", "programm_oeffnen", "hubspot_im_crm_oeffnen", "in_zwischenablage"}
+LOCAL = {"seite_oeffnen", "programm_oeffnen", "hubspot_im_crm_oeffnen", "in_zwischenablage",
+         "browser_oeffnen"}  # öffnet eine Adresse im echten Chrome (nie aus Hintergrundaufträgen)
 MEMORY_READ_COMMANDS = {"view"}
 
 DEDUP_WINDOW = {"write": 10 * 60, "local": 20}   # Sekunden, in denen ein identischer Aufruf als Duplikat gilt

@@ -55,7 +55,8 @@ class DemoAgent:
     def reload(self):
         pass
 
-    def ask(self, text, on_sentence=None, on_tool=None, on_token=None, on_step=None, job=None, cancel_signal=None):
+    def ask(self, text, on_sentence=None, on_tool=None, on_token=None, on_step=None, job=None, cancel_signal=None,
+            attachments=None):
         from . import jobs, memory
         from .agent import Cancelled
         self.cancel()
@@ -166,7 +167,7 @@ class Bridge:
             candidate = DemoAgent(conversation_id=conversation_id)
         else:
             from .agent import Agent
-            candidate = Agent(channel="web", model=config.get("model") or "haiku", conversation_id=conversation_id)
+            candidate = Agent(channel="web", model=config.get("model") or "sonnet", conversation_id=conversation_id)
         with self.guard:
             if len(self.agents) >= 64:
                 active = {"v3-" + state.conversation_id for state in self.requests.values()}
@@ -226,6 +227,9 @@ class Bridge:
                     self.active_requests[id(agent)] = state.request_id
                 if state.cancelled.is_set():
                     return
+                from . import anhaenge
+
+                attached = anhaenge.take(conversation_id)
                 job = jobs.create(text, agent.conversation_id)
                 runtime._job_agents[job["id"]] = agent
                 runtime.bus.publish({"typ": "job", "job": runtime._public(job), "job_id": job["id"], "conversation_id": agent.conversation_id})
@@ -238,7 +242,8 @@ class Bridge:
                           on_tool=lambda name: (emit({"type": "log", "message": "Werkzeug: " + name}),
                                                  emit({"type": "tool", "name": name})),
                           on_step=lambda step: emit({"type": "log", "message": "Schritt: " + str(step.get("werkzeug", "")) + " / " + str(step.get("status", ""))}),
-                          job=job, cancel_signal=state.cancelled)
+                          job=job, cancel_signal=state.cancelled,
+                          **({"attachments": attached} if attached else {}))
                 if answer and not streamed:
                     # Meldungen ohne Textstrom (Budget, Zeitlimit, Schrittgrenze, Ausfall) sonst stumm: hörbar machen
                     emit({"type": "token", "text": answer})
@@ -287,6 +292,52 @@ class Bridge:
             if not state.finished:
                 self.cancel(state)
         return response
+
+    # --- Dateianhänge im Chat (nur Arbeitsspeicher, siehe anhaenge.py) ---
+
+    def _conversation(self, request) -> str:
+        conversation_id = request.query.get("conversation_id", "")
+        if not _ID.fullmatch(conversation_id):
+            raise web.HTTPBadRequest(text="Ungültiges Gespräch")
+        return conversation_id
+
+    async def anhang_hochladen(self, request):
+        from . import anhaenge, modelle
+
+        conversation_id = self._conversation(request)
+        name = request.query.get("name", "")[:200]
+        # Gestreamt mit eigener Obergrenze lesen (client_max_size der App gilt nur für read()/json()).
+        chunks, size = [], 0
+        async for chunk in request.content.iter_chunked(65536):
+            size += len(chunk)
+            if size > anhaenge.MAX_FILE:
+                return web.json_response({"fehler": f"Die Datei ist zu groß (höchstens {anhaenge.MAX_FILE // (1024 * 1024)} MB)."},
+                                         status=413)
+            chunks.append(chunk)
+        try:
+            result = await asyncio.to_thread(anhaenge.add, conversation_id, name, b"".join(chunks))
+        except anhaenge.AttachmentError as exc:
+            return web.json_response({"fehler": str(exc)}, status=415 if "nicht unterstützt" in str(exc) else 400)
+        except Exception as exc:  # nie Dateiinhalt oder Pfade in die Antwort
+            logging.getLogger(__name__).warning("Anhang nicht verarbeitet: %s", type(exc).__name__)
+            return web.json_response({"fehler": "Die Datei konnte nicht verarbeitet werden."}, status=400)
+        provider = modelle.PROVIDERS[modelle.current().provider]
+        if result["typ"] in anhaenge.IMAGE_TYPES and not provider.images:
+            result["hinweis"] = f"Das aktuelle Modell ({provider.name}) kann keine Bilder sehen."
+        elif result["gekuerzt"]:
+            result["hinweis"] = "Sehr lange Datei: nur der Anfang wird übernommen."
+        return web.json_response({"anhang": result})
+
+    async def anhaenge_liste(self, request):
+        from . import anhaenge
+
+        return web.json_response({"anhaenge": anhaenge.pending(self._conversation(request))})
+
+    async def anhang_entfernen(self, request):
+        from . import anhaenge
+
+        removed = anhaenge.remove(self._conversation(request), request.match_info.get("id", ""))
+        return web.json_response({"entfernt": removed}, status=200 if removed else 404)
 
     async def cancel_request(self, request):
         data = await self.json_body(request)
@@ -542,15 +593,19 @@ class Bridge:
 
     # --- Aus der früheren Oberfläche (8765) übernommen: Einstellungen, Echtzeit, Jobs, Protokolle, Ereignisse ---
 
-    def _set_model(self, model_id: str) -> None:
+    def _set_model(self, key: str) -> None:
+        """Laufende Agenten auf das neue Modell (ggf. anderer Anbieter) umstellen, ohne das Gespräch zu verlieren."""
         with self.guard:
             agents = list(self.agents.values())
-        for agent in agents:
-            with contextlib.suppress(Exception):
-                agent.model = model_id
         webui = sys.modules.get("jarvis.webui")
         if webui is not None and getattr(webui, "_agent", None) is not None:
-            webui._agent.model = model_id
+            agents.append(webui._agent)
+        for agent in agents:
+            with contextlib.suppress(Exception):
+                if hasattr(agent, "set_model"):
+                    agent.set_model(key)
+                else:
+                    agent.model = key
 
     async def settings_get(self, request):
         from . import echtzeit
@@ -1020,6 +1075,9 @@ def create_app(token: str | None = None, demo: bool | None = None) -> web.Applic
     app.router.add_get("/health", health)
     app.router.add_post("/internal/generate", bridge.generate)
     app.router.add_post("/internal/cancel", bridge.cancel_request)
+    app.router.add_post("/internal/anhaenge", bridge.anhang_hochladen)
+    app.router.add_get("/internal/anhaenge", bridge.anhaenge_liste)
+    app.router.add_delete("/internal/anhaenge/{id}", bridge.anhang_entfernen)
     app.router.add_get("/internal/memory", bridge.memory_get)
     app.router.add_get("/internal/news", bridge.news)
     app.router.add_get("/internal/market", bridge.market)

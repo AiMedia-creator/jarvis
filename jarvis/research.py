@@ -21,10 +21,10 @@ MAX_SUBQUESTIONS = 5
 
 
 def _model(value: str | None) -> str:
-    from .agent import MODELS
+    from . import modelle
 
-    name = config.get("research_model") or value or config.get("model", "sonnet") or "sonnet"
-    return MODELS.get(name, name)
+    # Recherche nutzt Anthropic-Server-Werkzeuge (Websuche) und läuft deshalb immer mit Claude.
+    return modelle.claude_id(config.get("research_model") or value or config.get("model", "sonnet") or "sonnet")
 
 
 def _text(response) -> str:

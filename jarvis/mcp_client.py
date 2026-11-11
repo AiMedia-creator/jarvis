@@ -17,6 +17,7 @@ Konfiguration in ``~/.jarvis/mcp.json`` (fehlt die Datei, passiert nichts)::
 - ``nur_lesen``: ``true`` (alle Werkzeuge lesen nur) oder eine Liste von Werkzeugnamen. Alles andere gilt als
   Aktion nach aussen und laeuft ueber Vorlage + Freigabe (approvals.py) – wie Mail senden.
 - ``erlaubt`` (optional): nur diese Werkzeuge des Servers ueberhaupt anbieten.
+- ``url_pruefen`` (optional): Werkzeuge, deren Argument ``url`` nur öffentliche http(s)-Ziele haben darf.
 - Ergebnisse laufen durch den Injection-Scanner (schutz.py).
 Unterstuetzt: stdio (``befehl``) und Streamable HTTP (``url``). MCP-Protokollversion 2025-03-26.
 """
@@ -56,7 +57,8 @@ def load_config() -> dict:
     except (OSError, ValueError):
         return {}
     servers = data.get("server") or data.get("servers") or data.get("mcpServers") or {}
-    return {k: v for k, v in servers.items() if isinstance(v, dict) and not v.get("aus")}
+    # „browser“ ist für das eingebaute browser-harness reserviert (browser.py, eigene enge Werkzeuge).
+    return {k: v for k, v in servers.items() if isinstance(v, dict) and not v.get("aus") and k != "browser"}
 
 
 class McpError(Exception):
@@ -245,8 +247,14 @@ def _make_tool(client: Client, spec: dict, mcp_tool: dict) -> Tool | None:
     ro = spec.get("nur_lesen")
     read_only = ro is True or (isinstance(ro, list) and raw in ro)
 
+    check_url = raw in (spec.get("url_pruefen") or [])
+
     def handler(**kw):
         kw.pop("bestaetigt_vom_nutzer", None)
+        if check_url and kw.get("url") not in (None, "", "about:blank"):
+            from .tools.web import check_url as checked
+
+            kw["url"] = checked(str(kw["url"]))  # nur öffentliche http(s)-Ziele, keine Zugangsdaten in der URL
         try:
             return _result_text(client.call("tools/call", {"name": raw, "arguments": kw}))
         except McpError as exc:
@@ -278,6 +286,15 @@ def tools() -> list[Tool]:
             if tool is not None:
                 out.append(tool)
     return out
+
+
+def server_state(name: str) -> str:
+    with _lock:
+        if name in _clients:
+            return "verbunden"
+        if name in _failed:
+            return "fehler: " + _failed[name]
+    return "nicht_gestartet"
 
 
 def status() -> list[str]:

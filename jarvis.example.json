@@ -1,0 +1,9 @@
+{
+  "_hinweis": "Vorlage für ~/.jarvis.json (chmod 600). Schlüssel lieber als Umgebungsvariable; Felder ohne Wert weglassen.",
+  "model": "opus",
+  "ollama_model": "",
+  "ollama_host": "http://127.0.0.1:11434",
+  "moonshot_model": "",
+  "claude_hilfsmodell": "sonnet",
+  "browser": "aus"
+}
