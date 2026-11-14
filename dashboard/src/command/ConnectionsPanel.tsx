@@ -28,7 +28,7 @@ function Card({ c }: { c: Connection }) {
       {c.schritte.length > 0 && (
         <div className="cn-steps"><h4>Das musst du tun</h4><ol>{c.schritte.map((s, i) => <li key={i}>{s}</li>)}</ol></div>
       )}
-      <p className="cc-hint">{c.pruefung === "live" ? `Live beim Anbieter geprüft${time(c.geprueft) ? ` um ${time(c.geprueft)}` : ""}.` : "Nur Konfiguration geprüft – ob der Zugang funktioniert, zeigt erst die Nutzung."}</p>
+      <p className="cc-hint">{c.pruefung === "live" ? `Live beim Anbieter geprüft${time(c.geprueft) ? ` um ${time(c.geprueft)}` : ""}.` : "Nur Konfiguration geprüft, nicht der Zugang selbst."}</p>
     </article>
   );
 }

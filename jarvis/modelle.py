@@ -116,6 +116,19 @@ def current() -> Choice:
     return resolve(config.get("model") or "sonnet")
 
 
+def backup(main: Choice | None = None) -> Choice | None:
+    """Ersatzmodell bei Überlastung/Ratenlimit (Einstellung ``backup_modell``). Nur derselbe Anbieter: so passen
+    Client, Schlüssel und Verlauf (Denkblöcke) ohne Umbau; ein anderer oder derselbe Eintrag zählt als „kein Backup“."""
+    name = (config.get("backup_modell") or "").strip()
+    if not name or name in ("aus", "kein", "none"):
+        return None
+    main = main or current()
+    choice = resolve(name)
+    if choice.provider != main.provider or choice.model == main.model or problem(choice):
+        return None
+    return choice
+
+
 def claude_id(name: str | None = None) -> str:
     """Modell-ID für Nebenaufgaben, die nur mit Claude laufen (Gremium, Recherche, Cloud-Skills)."""
     choice = resolve(name or config.get("model") or "sonnet")
@@ -153,11 +166,21 @@ def problem(choice: Choice) -> str | None:
     return None
 
 
+def zeitlimit(timeout: float):
+    """Zeitlimit mit kurzem Verbindungsaufbau: Kommt die Verbindung zum Anbieter nicht zustande (hängender
+    Verbindungsversuch), scheitert der Versuch nach 5 s statt nach dem vollen Limit und wird sofort wiederholt –
+    sonst schweigt Jarvis im Gespräch fast eine Minute."""
+    import httpx
+
+    return httpx.Timeout(timeout, connect=min(5.0, timeout))
+
+
 def make_client(choice: Choice, timeout: float = 60.0, max_retries: int = 1):
     """Anthropic-SDK-Client für den Anbieter der Auswahl (Moonshot/Ollama über deren Anthropic-kompatible API)."""
     import anthropic
 
     provider = PROVIDERS[choice.provider]
+    timeout = zeitlimit(timeout)
     if provider.id == "anthropic":
         headers = {}
         workspace = config.get("anthropic_workspace") or os.getenv("ANTHROPIC_WORKSPACE_ID")

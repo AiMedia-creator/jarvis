@@ -86,7 +86,7 @@ Der Start installiert fehlende Python-Abhängigkeiten isoliert, erzeugt einen zu
 
 Der Echtmodus nutzt `ANTHROPIC_API_KEY` aus `~/.zshrc` bzw. `~/.jarvis.json`.
 
-Im Echtmodus übernimmt die Brücke die vorhandene Stimmen-/Tempo-Konfiguration: ElevenLabs, sofern eingerichtet, sonst bestehender edge-tts-Fallback. Lokale Mikrofon-Transkription läuft über faster-whisper, ohne Audio-Hardware auf dem Server zu öffnen. Das erste Whisper-Modell wird bei Erstbenutzung heruntergeladen; `JARVIS_WHISPER_MODEL` wählt das Modell (Standard `base`). Vorhandene CLI-Befehle wie `python -m jarvis --mikro` und `--google-verbinden` bleiben verfügbar. Die native UI kann unabhängig mit `python -m jarvis --ui --demo` gestartet werden.
+Im Echtmodus übernimmt die Brücke die vorhandene Stimmen-/Tempo-Konfiguration: ElevenLabs, sofern eingerichtet, sonst bestehender edge-tts-Fallback. Lokale Mikrofon-Transkription läuft über faster-whisper, ohne Audio-Hardware auf dem Server zu öffnen. Das erste Whisper-Modell wird bei Erstbenutzung heruntergeladen; `JARVIS_WHISPER_MODEL` wählt das Modell (Standard `small`; `base` ist je Satz rund 0,45 s schneller, verhört aber Namen und kurze Antworten). Vorhandene CLI-Befehle wie `python -m jarvis --mikro` und `--google-verbinden` bleiben verfügbar. Die native UI kann unabhängig mit `python -m jarvis --ui --demo` gestartet werden.
 
 ## Erweiterte Kern-Dateien
 
@@ -123,3 +123,15 @@ cd dashboard && pnpm install --frozen-lockfile && pnpm typecheck && pnpm test &&
 ```
 
 Offline-Teststand (V4, 17.10.2026): Python **81 bestanden, 2 optionale Browser-Tests übersprungen**; Java **16 bestanden**; React/TypeScript **30 bestanden** (inkl. Ansichtsentscheidungen, Negation, manueller Vorrang, veraltete Ereignisse, stabile Audio-Laufzeit), Produktionsbuild enthalten. Zusätzlich wurde der Gesamtlauf mit drei WebSocket-Audiozügen, STOP_STREAM, Owner-/Observer-Trennung, anschließender PCM/STT-Verarbeitung, gemeinsamer nativer Job-Liste und Gedächtnis-Recall nach Prozessneustart geprüft. Lokale HTTP-Provider-Doubles ersetzen persönliche Konten. Physische Mac-Mikrofone/Lautsprecher und fremde Live-Kameras wurden nicht live getestet. Ein unmittelbarer lokaler Playback-/Buffer-Purge ist implementiert; tatsächliche Netz-, Modell-, STT- und Hardwarelatenz bleibt messbar und ist nicht garantiert null.
+
+## Stand 11.11.2026: Leitstand, Command-Center-Fenster, CRM, gbrain, Browser-Agent
+
+- **Design „Leitstand“ (Lime auf Tinte):** `docs/DASHBOARD-NEUGESTALTUNG.md` (Nachtrag), Entscheidung und Varianten in
+  `docs/designs/jarvis-umbau-leitstand.md`.
+- **Command Center:** eigener Link in der Schiene, öffnet `http://localhost:8080/?screen=command` in einem eigenen
+  Fenster mit Sprachkreis, Texteingabe und Karte („Zeig Berlin“). Anrede: `JARVIS_ANREDE` (Standard „Master“).
+- **CRM für Kaltakquise** statt „Vertrieb“: `docs/CRM.md`.
+- **Gedächtnis sichern, exportieren, gbrain parallel:** `docs/GEDAECHTNIS-GBRAIN.md`, `python scripts/gedaechtnis.py`.
+- **Browser-Agent (Browser Use), aus per Standard:** `docs/BROWSER-AGENT.md`.
+- Nach einem Update: `./jarvis-start.sh neustart` (lädt die neuen Routen `/api/leads*`).
+- **Ägyptisch (Masri):** Einstellung „Sprache“ (Deutsch, Ägyptisch, Automatisch): `docs/SPRACHE-AEGYPTISCH.md`.

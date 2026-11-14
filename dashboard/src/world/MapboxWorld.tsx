@@ -31,9 +31,13 @@ async function geocode(query: string): Promise<Place> {
 
 type Engine = "mapbox" | "ersatz" | "einrichtung";
 
-export default function MapboxWorld({ query, webcams }: { query?: string; webcams: "bereit" | "nicht_eingerichtet" | null }) {
+export default function MapboxWorld({ query, webcams, directFallback = false }: {
+  query?: string; webcams: "bereit" | "nicht_eingerichtet" | null;
+  /** Ohne Mapbox-Schlüssel sofort die freie Ersatzkarte zeigen (Command Center: „Zeig Berlin“ soll ohne Zwischenschritt fliegen). */
+  directFallback?: boolean;
+}) {
   const token = mapboxToken();
-  const [engine, setEngine] = useState<Engine>(token ? "mapbox" : "einrichtung");
+  const [engine, setEngine] = useState<Engine>(token ? "mapbox" : directFallback ? "ersatz" : "einrichtung");
   const element = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MapboxMap | null>(null);
   const fallbackRef = useRef<WorldMap | null>(null);

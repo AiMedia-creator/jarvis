@@ -85,6 +85,21 @@ export function SettingsDialog({ open, onClose, prefs, onPrefs, settings, onSett
         {!settings && <p className="cc-empty">Einstellungen werden geladen … (Jarvis-Server muss laufen)</p>}
         {settings && (
           <div className="cc-form">
+            {settings.sprachen && settings.sprache && (
+              <label>Sprache
+                <select value={settings.sprache} disabled={disabled} onChange={(e) => void save({ sprache: e.target.value }, "Sprache")}>
+                  {settings.sprachen.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+                <span className="cc-hint" title="Ägyptisch: Kairoer Dialekt (Masri). Automatisch: Jarvis antwortet in der Sprache, in der du sprichst.">Gilt ab der nächsten Antwort, in Echtzeit ab dem nächsten Gespräch.</span>
+              </label>
+            )}
+            {settings.sprache && settings.sprache !== "de" && settings.stimme_arabisch && (
+              <label>Stimme für arabische Antworten
+                <select value={settings.stimme_arabisch} disabled={disabled} onChange={(e) => void save({ stimme_arabisch: e.target.value }, "Arabische Stimme")}>
+                  {settings.stimmen.map((v) => <option key={v.id} value={v.id}>{v.gruppe ? `${v.gruppe}: ` : ""}{v.name}</option>)}
+                </select>
+              </label>
+            )}
             <label>Stimme
               <select ref={first} value={settings.stimme} disabled={disabled} onChange={(e) => void save({ stimme: e.target.value }, "Stimme")}>
                 {settings.stimmen.map((v) => <option key={v.id} value={v.id}>{v.gruppe ? `${v.gruppe}: ` : ""}{v.name}</option>)}
@@ -121,7 +136,36 @@ export function SettingsDialog({ open, onClose, prefs, onPrefs, settings, onSett
                 </div>
               )}
               <span className="cc-hint">Aktuell: {settings.modell}{settings.anbieter ? ` (${settings.anbieter})` : ""}. Schlüssel liegen nur in Umgebungsvariablen, nie hier.</span>
+              {settings.modell_auswahl?.length ? (() => {
+                const main = settings.modell_auswahl.find((m) => m.key === settings.modell_key);
+                const options = settings.modell_auswahl.filter((m) => m.key !== settings.modell_key && m.anbieter === main?.anbieter && m.verfuegbar && m.modell !== main?.modell);
+                return (
+                  <label>Backup bei Überlastung oder Ratenlimit
+                    <select value={settings.backup_key ?? "aus"} disabled={disabled}
+                      onChange={(e) => void save({ backup_modell: e.target.value }, "Backup")}>
+                      <option value="aus">Kein Backup</option>
+                      {options.map((m) => <option key={m.key} value={m.key}>{m.name}</option>)}
+                    </select>
+                    <span className="cc-hint">Springt nur ein, wenn das Hauptmodell überlastet ist oder bremst – für den Rest dieser Antwort.</span>
+                  </label>
+                );
+              })() : null}
             </fieldset>
+            {settings.erinnerungen_an_cloud !== undefined && (
+              <fieldset className="cc-memory-privacy">
+                <legend>Erinnerungen und Datenschutz</legend>
+                <label className="cc-check">
+                  <input type="checkbox" checked={settings.erinnerungen_an_cloud} disabled={disabled}
+                    onChange={(e) => void save({ erinnerungen_an_cloud: e.target.checked }, "Erinnerungs-Einstellung")} />
+                  <span>Passende Erinnerungen an den Cloud-Anbieter senden</span>
+                </label>
+                <span className="cc-hint">
+                  {settings.anbieter_cloud === false
+                    ? "Das aktive Modell läuft lokal (Ollama): Erinnerungen verlassen diesen Mac nicht."
+                    : `Sonnet und Opus laufen bei ${settings.anbieter ?? "einem Cloud-Anbieter"}. Ist das Häkchen gesetzt, schickt Jarvis bei einer Frage höchstens fünf dazu passende Erinnerungen mit der Anfrage dorthin – nie den ganzen Speicher. Ohne Häkchen antwortet Jarvis ohne Erinnerungen; gespeichert bleibt alles lokal auf diesem Mac.`}
+                </span>
+              </fieldset>
+            )}
             <label>Stimmqualität im Echtzeit-Modus
               <select value={settings.eleven_tts_model} disabled={disabled || !settings.eleven_tts_modelle.length}
                 onChange={(e) => void save({ eleven_tts_model: e.target.value }, "Stimmqualität")}>
@@ -131,7 +175,7 @@ export function SettingsDialog({ open, onClose, prefs, onPrefs, settings, onSett
             </label>
             <label>Sprechpause, bis Jarvis antwortet <span className="mono">{prefs.pause.toFixed(1).replace(".", ",")} s</span>
               <input type="range" min={0.5} max={2.5} step={0.1} value={prefs.pause} onChange={(e) => set({ pause: Number(e.target.value) })} />
-              <span className="cc-hint">Kürzer = schneller, länger = er fällt dir nicht ins Wort. Wirkt im Studio sofort, in Echtzeit ab dem nächsten Gespräch.</span>
+              <span className="cc-hint">Kürzer = schneller, länger = er fällt dir nicht ins Wort.</span>
             </label>
             <label>Reinreden, während Jarvis spricht (Studio)
               <select value={prefs.barge} onChange={(e) => set({ barge: e.target.value === "aus" ? "aus" : "frei" })}>

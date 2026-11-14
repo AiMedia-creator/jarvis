@@ -164,3 +164,44 @@ der mintfarbene Hintergrund wurde durch neutrales Papier ersetzt. Deshalb wurde 
 - Die Bereiche unter „Arbeit“ und „System“ sind nur umgefärbt, nicht neu gestaltet.
 - Die Vollbild-Ansichten und die Sprachbühne nutzen weiter das dunkle Amber-Schema.
 - Kein dunkles Schema für die Arbeitsoberfläche.
+
+---
+
+# Nachtrag 11.11.2026 (abends): Designsystem „Leitstand“, Variante „Lime auf Tinte“
+
+Löst „Werkbank“ (Abschnitt 6) ab und gilt jetzt auch für die Vollbild-Ansichten. Entscheidung, Varianten und
+Codex-Gegenprüfung: `designs/jarvis-umbau-leitstand.md`; Vorschau: `designs/jarvis-designkonzept.html`.
+
+- **Flächen:** Schiene Tinte `#14202B`, Grund Schiefer `#DDE3E6`, getönte Flächen `#D3DADE`/`#E4E9EB`, Eingaben
+  `#EDF1F2`. Keine weißen Karten; Abschnitte liegen flach auf dem Grund mit einer 2-px-Tinte-Linie darüber.
+- **Eine Markenfarbe:** Signal-Lime `#C8F031`, nur als Fläche mit Tinte-Schrift (aktive Seite, der eine Markenknopf je
+  Ansicht, Fortschritt, Sprachkreis). Keine Bereichsfarben.
+- **Status:** neutraler Chip, Punkt in Statusfarbe, Text. Rund = braucht dich oder Fehler, eckig = alles andere.
+- **Schrift:** Archivo (variabel, 112 % Breite) für Überschriften und große Zahlen, IBM Plex Sans für die Oberfläche,
+  JetBrains Mono für Zeiten und Zähler. Alle lokal gebündelt.
+- **Form und Bewegung:** Radius 3 px (Chips 2 px), keine Schatten, kein Leuchten. 120/180/280 ms.
+  `prefers-reduced-motion` hält Sprachkreis, Karte und Übergänge an.
+- **Dunkle Bühnen** derselben Familie: Command-Center-Fenster (`.cc.cw`, Tokens umbelegt in `command/window.css`) und
+  die „Mehr“-Ansichten (`.lt-stage`, legt die `--j-*`-Variablen der alten Ansichten auf die Leitstand-Farben).
+- **Tokens:** `dashboard/src/command/command.css`, Block `.cc, .lt`. Ein Test rechnet 18 Textpaare (≥ 4,5:1) und die
+  Feldränder (≥ 3:1) nach und verbietet weiße Flächen: `command/crm.test.tsx`.
+
+## Geänderte Informationsarchitektur
+
+- **Jarvis:** Heute · Freigaben · Agenten / Jobs
+- **Vertrieb:** CRM · Kalender · Aufträge · Content
+- **System:** Skills und Automationen · Gedächtnis · Verbindungen
+- **Mehr:** World View · Nachrichten · Märkte · Kameras · Systemprotokoll (laufen jetzt in derselben Schiene)
+- **Command Center:** eigener Link in der Schiene, öffnet `?screen=command` in einem eigenen Fenster (eigener Raum,
+  eigene Steuerung, einziger Ort für Mikrofon und Stimme). `⌘K` und „Übergeben“ reichen den Auftrag dorthin.
+
+## Entfallen oder verlagert
+
+| Element | Entscheidung |
+| --- | --- |
+| „Zuletzt fertig“ auf „Heute“ | entfernt; abgeschlossene Jobs stehen unter „Agenten / Jobs“ → „Abgeschlossen“ |
+| Gespräche in der Job-Liste | ausgeblendet (Server-Feld `klasse`); sie stehen im Gesprächsarchiv |
+| Abschnitt „Command Center“ im Dashboard | eigenes Fenster; im Dashboard bleibt ein Hinweis mit Knopf |
+| Sprach-Dock und Blase in den „Mehr“-Ansichten | entfallen; `components/Dock.tsx` und `VoiceCore.tsx` werden nicht mehr eingebunden |
+| Abschnitt „Vertrieb“ | „CRM“ mit Leads und Call-Session; Pipeline, Kennzahlen und Vorbereitung unter „Auswertung und Vorbereitung“ |
+| Abgeschlossene Läufe und abgeschaltete Abläufe unter „Skills und Automationen“ | ausgeblendet; Bibliothek und frühere Aufträge hinter einem Aufklapper |

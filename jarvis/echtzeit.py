@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from typing import Callable, Iterable
 
-from . import config
+from . import config, sprache
 
 
 def demo() -> bool:
@@ -50,13 +50,24 @@ def status(model_id: str | None = None) -> dict:
             "modell": model_id or choice.model, "modell_key": choice.key,
             "modelle": [c["key"] for c in modelle.overview(check_ollama=False)],
             "modell_auswahl": modelle.overview(), "anbieter": modelle.PROVIDERS[choice.provider].name,
+            "backup_key": (modelle.backup(choice).key if modelle.backup(choice) else None),
+            "erinnerungen_an_cloud": _memories_to_cloud(), "anbieter_cloud": choice.provider != "ollama",
             "stimme": tts.current_voice(), "tempo": tts.speed(),
+            "sprache": sprache.aktuell(), "sprachen": [{"id": k, "name": v} for k, v in sprache.SPRACHEN.items()],
+            "stimme_arabisch": config.get("stimme_arabisch", sprache.STIMME_ARABISCH),
             "stimmen": tts.voices(), "name": config.get("owner_name", "Omar"),
             "sprachkern_verfuegbar": eleven_available(), "sprachkern_problem": eleven_problem(),
             "eleven_tts_model": config.get("eleven_tts_model") or "eleven_flash_v2_5", "eleven_tts_modelle": TTS_MODELS}
 
 
-def save_settings(data: dict, set_model: Callable[[str], None] | None = None) -> dict:
+def _memories_to_cloud() -> bool:
+    from . import erinnerungen
+
+    return erinnerungen.cloud_allowed("anthropic")
+
+
+def save_settings(data: dict, set_model: Callable[[str], None] | None = None,
+                  reload_prompts: Callable[[], None] | None = None) -> dict:
     """Stimme, Tempo, Stimmmodell und Gehirn-Modell speichern. `set_model` stellt laufende Agenten sofort um."""
     from . import modelle, tts
 
@@ -69,6 +80,17 @@ def save_settings(data: dict, set_model: Callable[[str], None] | None = None) ->
         config.save("voice", v)
         if v.startswith("eleven:"):
             tts.eleven_problem = None  # neuer Versuch erlaubt
+    if "sprache" in data:
+        if data["sprache"] not in sprache.SPRACHEN:
+            raise ValueError("unbekannte Sprache")
+        config.save("sprache", None if data["sprache"] == "de" else str(data["sprache"]))
+        if reload_prompts:
+            reload_prompts()  # laufende Agenten bauen ihren Systemprompt neu – gilt ab der nächsten Antwort
+    if "stimme_arabisch" in data:
+        v = str(data["stimme_arabisch"])
+        if v not in {x["id"] for x in tts.voices()}:
+            raise ValueError("unbekannte Stimme")
+        config.save("stimme_arabisch", None if v == sprache.STIMME_ARABISCH else v)
     if "tempo" in data:
         config.save("voice_speed", f"{max(0.8, min(1.3, float(data['tempo']))):.2f}")
     if "eleven_tts_model" in data:
@@ -78,6 +100,25 @@ def save_settings(data: dict, set_model: Callable[[str], None] | None = None) ->
             raise ValueError("unbekanntes Stimmmodell")
         config.save("eleven_tts_model", data["eleven_tts_model"])
     model_id = None
+    if "erinnerungen_an_cloud" in data:  # Memory v1: abgerufene Erinnerungen an Cloud-Anbieter senden (an/aus)
+        if not isinstance(data["erinnerungen_an_cloud"], bool):
+            raise ValueError("erinnerungen_an_cloud muss true oder false sein")
+        config.save("erinnerungen_an_cloud", "an" if data["erinnerungen_an_cloud"] else "aus")
+    if "backup_modell" in data:  # Ersatz bei Überlastung/Ratenlimit; gleicher Anbieter wie das Hauptmodell
+        key = str(data["backup_modell"] or "aus")
+        if key != "aus":
+            choice = modelle.catalog().get(key)
+            main = modelle.resolve(str(data.get("modell") or "") or None) if data.get("modell") else modelle.current()
+            if choice is None:
+                raise ValueError("unbekanntes Backup-Modell")
+            if choice.provider != main.provider:
+                raise ValueError("Das Backup muss vom selben Anbieter sein wie das Hauptmodell.")
+            if choice.model == main.model:
+                raise ValueError("Backup und Hauptmodell sind gleich.")
+            reason = modelle.problem(choice)
+            if reason:
+                raise ValueError(f"{choice.label} ist nicht eingerichtet: {reason}")
+        config.save("backup_modell", None if key == "aus" else key)
     if "modell" in data:
         key = str(data["modell"])
         choice = modelle.catalog().get(key)

@@ -41,6 +41,9 @@ ACTIONS = {
     "hubspot_mail_senden": ("E-Mail senden und protokollieren", "Gmail + HubSpot"),
     "drive_ordnen": ("Drive umbauen", "Google Drive"),
     "n8n_starten": ("Workflow starten", "n8n"),
+    "browser_recherche": ("Browser-Recherche starten (nur lesen)", "Browser Use · lokal in der Sandbox"),
+    "browser_interaktion": ("Browser-Interaktion starten (klicken und eingeben)", "Browser Use · lokal in der Sandbox"),
+    "browser_absenden": ("Im Browser absenden", "Website laut Karte"),
 }
 
 
@@ -51,7 +54,26 @@ def _drive_preview(args: dict) -> list[dict]:
 
 
 # Werkzeuge mit eigener Vorschau (z. B. echte Dateinamen statt ids). Ohne Erfolg: Standardzeilen.
-PREVIEWS = {"drive_ordnen": _drive_preview}
+def _browser_agent_preview(args: dict) -> list[dict]:
+    from .browser_agent import vorlage_zeilen
+
+    return vorlage_zeilen(args)  # prüft Aufgabe und Domains: ungültige Anfragen erzeugen gar keine Vorlage
+
+
+def _browser_interaktion_preview(args: dict) -> list[dict]:
+    from .browser_agent import vorlage_zeilen
+
+    return vorlage_zeilen(args, "interaktion")
+
+
+def _browser_absenden_preview(args: dict) -> list[dict]:
+    from .browser_agent import absenden_zeilen
+
+    return absenden_zeilen(args)  # unbekannte oder verfallene Aktion: gar keine Vorlage
+
+
+PREVIEWS = {"drive_ordnen": _drive_preview, "browser_recherche": _browser_agent_preview,
+            "browser_interaktion": _browser_interaktion_preview, "browser_absenden": _browser_absenden_preview}
 FIELDS = [("an", "An"), ("betreff", "Betreff"), ("titel", "Titel"), ("beginn", "Beginn"), ("ende", "Ende"),
           ("faellig", "Fällig"), ("prioritaet", "Priorität"), ("ort", "Ort"), ("richtung", "Richtung"),
           ("kontakt_id", "HubSpot-Kontakt"), ("deal_id", "HubSpot-Deal"), ("antwort_auf", "Antwort auf Mail"),
@@ -391,6 +413,19 @@ def _ensure_handlers() -> None:
         all_tools({})
     except Exception as exc:  # fehlende Integrationen duerfen den Start nicht stoppen
         print(f"[freigaben] Werkzeuge nicht geladen: {type(exc).__name__}")
+
+
+def vorlage(tool: str, args: dict) -> dict:
+    """Legt für ein freigabepflichtiges Werkzeug eine Vorlage an, ohne es auszuführen (z. B. aus dem CRM).
+
+    Ausgeführt wird wie immer erst nach „Freigeben“; ein unbekanntes oder nicht eingerichtetes Werkzeug ergibt
+    einen ToolFailure statt einer leeren Vorlage.
+    """
+    _ensure_handlers()
+    handler = _handlers.get(tool)
+    if handler is None:
+        raise ToolFailure(f"Für „{tool}“ ist keine Freigabe-Aktion eingerichtet.")
+    return _create(tool, dict(args), handler)
 
 
 def on_decision(fn) -> None:

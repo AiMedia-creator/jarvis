@@ -1,0 +1,92 @@
+/* Command Center als eigenes Fenster: dieselbe Familie wie das Dashboard, als dunkle Bühne.
+   Die Tokens werden hier nur umbelegt – alle Bausteine (Knöpfe, Chips, Gespräch, Diagnose) bleiben dieselben. */
+.cc.cw {
+  --cc-bg: #0E1820; --cc-panel: #16242F; --cc-panel-2: #12202B; --cc-sunken: #1D2C3A; --cc-input: #16242F; --cc-chip: #24384A;
+  --cc-text: #E8EEF2; --cc-text-2: #C4D0D9; --cc-muted: #9FB0BD; --cc-faint: #6F8291;
+  --cc-field: #5B7186; --cc-line: #2C4558; --cc-line-soft: #223647; --cc-line-strong: #3F5A70; --cc-rule: #E8EEF2;
+  --cc-blue: #4FC3B8; --cc-blue-hover: #6FD3C9; --cc-blue-text: #7FD6CD; --cc-blue-soft: #143B3A; --cc-accent-line: #1F5A57; --cc-accent-mid: #4FC3B8;
+  /* Hauptaktionen und aktive Umschalter tragen auf der Bühne die Markenfarbe. */
+  --cc-navy: #C8F031; --cc-navy-2: #B7DE22; --cc-on-navy: #14202B; --cc-on-blue: #0E1820;
+  --cc-you: #FFB59A; --cc-you-strong: #FF7A45; --cc-you-soft: #3A2118; --cc-you-line: #6B3A26;
+  --cc-ok: #8FD9A8; --cc-ok-strong: #4CC27A; --cc-ok-soft: #15301F; --cc-ok-line: #25553A;
+  --cc-warn: #F0CF7A; --cc-warn-strong: #E0A82E; --cc-warn-soft: #33290F; --cc-warn-line: #5C4A1A;
+  --cc-danger: #FFB4A8; --cc-danger-strong: #FF6B57; --cc-danger-soft: #3A1A17; --cc-danger-line: #6B2A25;
+  display: flex; flex-direction: column; color-scheme: dark;
+}
+.cc.cw :focus-visible { outline: 3px solid var(--cc-brand); outline-offset: 2px; box-shadow: none; }
+.cc.cw .cc-btn:hover:not(:disabled) { background: var(--cc-sunken) !important; }
+.cc.cw .cc-btn.accent:hover:not(:disabled), .cc.cw .cc-tbtn.primary:hover:not(:disabled) { background: var(--cc-navy-2) !important; }
+.cc.cw .cc-badge, .cc.cw .td-count { color: #14202B; }
+.cc.cw kbd { background: transparent; }
+.cc.cw .cc-dialog { border: 1.5px solid var(--cc-line-strong); }
+
+.cw-top { display: flex; align-items: center; gap: 14px; padding: 10px 20px; background: #14202B; border-bottom: 1px solid var(--cc-line); flex-wrap: wrap; }
+.cw-top .cc-brand { padding: 0; }
+.cw-top h1 { margin: 0; font: 500 12px var(--cc-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--cc-muted); }
+.cw-top-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.cw-notice { margin: 0; padding: 8px 20px; background: var(--cc-blue-soft); color: var(--cc-text); border-bottom: 1px solid var(--cc-line); }
+.cw-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); }
+.cc.cw.with-map .cw-body { grid-template-columns: minmax(420px, 1fr) minmax(0, 1.15fr); }
+.cw-center { min-width: 0; min-height: 0; display: flex; }
+.cc.cw.with-map .cc-center-grid { grid-template-columns: minmax(0, 1fr); }
+.cc.cw.with-map .cc-center-side { display: none; }
+.cw-map { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--cc-line); animation: cw-map-in var(--cc-t-slow) ease-out both; }
+.cw-map > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--cc-line); }
+.cw-map-body { position: relative; flex: 1; min-height: 0; display: flex; }
+.cw-map-body > * { flex: 1; min-width: 0; }
+/* Im Command Center zählt die Karte: die Steuerspalte der World View bleibt dem Dashboard vorbehalten. */
+.cw-map .wm { grid-template-columns: minmax(0, 1fr); }
+.cw-map .wm-panel { display: none; }
+.cw-map-src { margin: 2px 0 0; font-size: 12.5px; color: var(--cc-muted); }
+@keyframes cw-map-in { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
+
+/* ---------- Sprachkreis ---------- */
+.cc-orb-stage { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 28px 20px 8px; }
+.orb-wrap { display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center; }
+.cc .orb { --orb-size: clamp(168px, 26vh, 232px); position: relative; width: var(--orb-size); height: var(--orb-size); border-radius: 50%; flex: none;
+  background: #12202B; box-shadow: inset 0 0 0 1.5px var(--cc-line-strong), 0 10px 0 -6px #081118; cursor: pointer;
+  transition: transform var(--cc-t-fast) ease, box-shadow var(--cc-t) ease; }
+.cc .orb:hover:not(:disabled) { box-shadow: inset 0 0 0 1.5px var(--cc-brand), 0 10px 0 -6px #081118; }
+.cc .orb:active:not(:disabled) { transform: scale(.985); }
+.cc .orb:disabled { cursor: not-allowed; opacity: .6; }
+.orb-ring { position: absolute; border-radius: 50%; border: 3px solid transparent; pointer-events: none; }
+.orb-ring.outer { inset: 7%; border-top-color: var(--orb-color, var(--cc-line-strong)); border-right-color: var(--orb-color, var(--cc-line-strong)); }
+.orb-ring.inner { inset: 17%; border-width: 2px; border-bottom-color: var(--cc-text-2); opacity: .7; }
+.orb-core { position: absolute; inset: 31%; border-radius: 50%; display: grid; place-items: center; font: 800 30px var(--cc-display);
+  background: var(--orb-fill, transparent); color: var(--orb-ink, var(--cc-text-2)); box-shadow: inset 0 0 0 2px var(--orb-color, var(--cc-line-strong));
+  transform: scale(calc(1 + var(--orb-level, 0) * .32)); transition: background var(--cc-t) ease, color var(--cc-t) ease; will-change: transform; }
+.orb-wrap.hoert { --orb-color: var(--cc-brand); --orb-fill: var(--cc-brand); --orb-ink: #14202B; }
+.orb-wrap.verarbeitet { --orb-color: var(--cc-brand); --orb-ink: var(--cc-brand); }
+.orb-wrap.antwortet { --orb-color: var(--cc-text); --orb-fill: var(--cc-text); --orb-ink: #14202B; }
+.orb-wrap.fehler { --orb-color: var(--cc-danger-strong); --orb-ink: var(--cc-danger-strong); }
+.orb-wrap.gesperrt, .orb-wrap.offline { --orb-color: var(--cc-faint); --orb-ink: var(--cc-muted); }
+.orb-wrap.gesperrt .orb-ring.outer, .orb-wrap.offline .orb-ring.outer { border-style: dashed; border-color: var(--cc-faint); }
+.orb-wrap.hoert .orb-ring.outer { animation: orb-spin 7s linear infinite; }
+.orb-wrap.hoert .orb-ring.inner { animation: orb-spin 11s linear infinite reverse; }
+.orb-wrap.verarbeitet .orb-ring.outer { animation: orb-spin 1.6s linear infinite; }
+.orb-wrap.verarbeitet .orb-ring.inner { animation: orb-spin 2.4s linear infinite reverse; }
+.orb-wrap.antwortet .orb-ring.outer { border-color: var(--cc-text); animation: orb-spin 14s linear infinite; }
+@keyframes orb-spin { to { transform: rotate(360deg); } }
+.orb-text { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px 12px; max-width: 46ch; }
+.orb-text strong { font: 800 22px var(--cc-display); font-stretch: 112%; letter-spacing: -.01em; }
+.orb-text p { flex-basis: 100%; margin: 0; color: var(--cc-muted); }
+.orb-mic { display: inline-flex; align-items: center; gap: 6px; font: 500 12.5px var(--cc-mono); padding: 2px 8px; border-radius: 2px; background: var(--cc-chip); color: var(--cc-text-2); }
+.orb-mic::before { content: ""; width: 8px; height: 8px; background: var(--cc-faint); }
+.orb-mic.on { background: var(--cc-danger-soft); color: var(--cc-danger); }
+.orb-mic.on::before { background: var(--cc-danger-strong); border-radius: 50%; }
+.cc-understood { margin: 0; padding: 6px 12px; border-radius: 2px; background: var(--cc-panel); border: 1px solid var(--cc-line-strong); }
+.cc-understood b { font: 500 12px var(--cc-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--cc-muted); margin-right: 6px; }
+.cc.cw .cc-thread { min-height: 120px; }
+.cc.cw .cc-thread-empty { margin: 0 auto; align-items: center; text-align: center; }
+.cc.cw .cc-thread-empty ul { align-items: center; }
+
+@media (max-width: 900px) {
+  .cc.cw.with-map .cw-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(260px, 45vh); }
+  .cw-map { border-left: 0; border-top: 1px solid var(--cc-line); }
+  .cc .orb { --orb-size: 156px; }
+  .cc-orb-stage { padding-top: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .orb-ring, .cw-map { animation: none !important; }
+  .orb-core { transform: none; transition: none; }
+}

@@ -67,3 +67,29 @@ describe("bounded playback gap recovery", () => {
     vi.useRealTimers();
   });
 });
+
+describe("Mikrofon-Start", () => {
+  it("lässt nach einem Fehler kein offenes Mikrofon zurück und teilt doppelte Starts", async () => {
+    const stop = vi.fn();
+    const getUserMedia = vi.fn(async () => ({ getTracks: () => [{ stop }] }));
+    vi.stubGlobal("navigator", { mediaDevices: { getUserMedia } });
+    vi.stubGlobal("AudioWorkletNode", class { port = {}; disconnect() {} });
+    const engine = new AudioEngine({ state: vi.fn(), log: vi.fn(), stopControl: vi.fn() });
+    let fail = true;
+    (engine as any).ctx = {
+      state: "running",
+      destination: {},
+      audioWorklet: { addModule: vi.fn(async () => { if (fail) throw new Error("Worklet nicht ladbar"); }) },
+      createMediaStreamSource: () => ({ connect: () => ({ connect: () => ({ connect: vi.fn() }) }) }),
+      createGain: () => ({ gain: { value: 1 } }),
+    };
+    await expect(engine.enableMic()).rejects.toThrow("Worklet nicht ladbar");
+    expect(stop).toHaveBeenCalledTimes(1); // Spur beendet: der Browser zeigt kein offenes Mikrofon
+    expect(engine.micActive()).toBe(false);
+    fail = false;
+    await Promise.all([engine.enableMic(), engine.enableMic()]); // Doppelklick
+    expect(getUserMedia).toHaveBeenCalledTimes(2); // ein Fehlversuch, danach genau ein gemeinsamer Start
+    expect(engine.micActive()).toBe(true);
+    vi.unstubAllGlobals();
+  });
+});

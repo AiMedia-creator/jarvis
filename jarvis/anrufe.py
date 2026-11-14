@@ -276,7 +276,8 @@ def kennzahlen(tage: int = 7, projekt_id: str | None = None) -> dict:
         nach[call["ergebnis"]] = nach.get(call["ergebnis"], 0) + 1
     termine = nach["termin"] + nach["abschluss"]
     heute = datetime.date.today().isoformat()
-    offene = [c for c in calls if c["naechster_schritt"] and c["frist"] and c["frist"] <= heute]
+    # Anrufe aus dem CRM (lead_id) zählen als Gespräch, aber ihr Follow-up führt der Lead – sonst bliebe es hier ewig „fällig“.
+    offene = [c for c in calls if c["naechster_schritt"] and c["frist"] and c["frist"] <= heute and not c.get("lead_id")]
     dauern = [c["dauer_s"] for c in calls if c.get("dauer_s")]
     return {
         "zeitraum_tage": tage, "projekt_id": projekt_id, "gespraeche": total, "nach_ergebnis": nach,

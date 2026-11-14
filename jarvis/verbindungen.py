@@ -220,6 +220,8 @@ def uebersicht(force: bool = False) -> dict:
     bstatus = browser.status()
     items.append(_item("browser", "Browser (browser-harness)", "Echten Chrome steuern – Klicken/Tippen nur nach Freigabe",
                        bstatus["zustand"], "konfiguration", hinweis=bstatus["hinweis"], schritte=bstatus["schritte"]))
+    items.append(_browser_agent_item())
+    items.append(_gbrain_item())
     for ident, name, fn in (("google", "Google", google_status), ("elevenlabs", "ElevenLabs", eleven_status)):
         try:
             items.append(fn(force))
@@ -273,6 +275,51 @@ def uebersicht(force: bool = False) -> dict:
     return {"stand": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "verbindungen": items,
             "braucht_dich": sum(1 for i in items if i["zustand"] in ("abgelaufen", "unvollstaendig", "fehler")),
             "reihenfolge": sorted((i["id"] for i in items), key=lambda k: order[next(x["zustand"] for x in items if x["id"] == k)])}
+
+
+def _browser_agent_item() -> dict:
+    """Browser Use: aus per Standard; bereit nur mit eigenem venv, Sandbox, Chrome und Claude-Schlüssel."""
+    from . import browser_agent
+    try:
+        st = browser_agent.status()
+    except Exception as exc:
+        return _item("browser_agent", "Browser-Agent (Browser Use)", "", "fehler", "konfiguration", hinweis=f"Status nicht prüfbar ({type(exc).__name__}).")
+    zustand = "verbunden" if st["bereit"] else ("nicht_eingerichtet" if not st["eingeschaltet"] else "unvollstaendig")
+    return _item("browser_agent", "Browser-Agent (Browser Use)",
+                 "Recherche (nur lesen) und – getrennt einschaltbar – Interaktion (klicken, eingeben) auf genannten Domains", zustand, "konfiguration",
+                 details=[f"browser-use {st['version']} {'installiert' if st['installiert'] else 'nicht installiert'} (eigenes venv)",
+                          "Zwei macOS-Sandboxen: keine Benutzerdateien, kein eigener Netzzugang des Agenten" if st["sandbox"] else "Sandbox nicht verfügbar – Agent startet nicht",
+                          "Netzfilter: nur erlaubte Domains, keine lokalen Adressen; nichts mit Außenwirkung wird ohne Freigabe gesendet",
+                          "Interaktion (klicken und eingeben): " + ("an" if st.get("interaktion") else "aus – JARVIS_BROWSER_INTERAKTION=an schaltet sie ein"),
+                          "Wegwerf-Browser ohne Anmeldungen, keine Browser-Use-Cloud, keine Telemetrie"],
+                 hinweis="" if st["bereit"] else st["grund"],
+                 schritte=[] if st["bereit"] else ([] if st["installiert"] else [
+                     "uv venv --python 3.12 ~/.jarvis/venvs/browser-use",
+                     "uv pip install --python ~/.jarvis/venvs/browser-use/bin/python 'browser-use==1.0.2'"]) + (
+                     [] if st["eingeschaltet"] else ["Einschalten: JARVIS_BROWSER_AGENT=an (Shell) oder \"browser_agent\": \"an\" in ~/.jarvis.json, dann ./jarvis-start.sh neustart",
+                                                     "Vorher docs/BROWSER-AGENT.md lesen: der Agent führt vom Modell geschriebenen Code aus."]))
+
+
+def _gbrain_item() -> dict:
+    """gbrain läuft parallel: SQLite bleibt führend. Eingeschaltet gibt es nur ein zusätzliches, lesendes Suchwerkzeug."""
+    from . import gbrain_bruecke
+    try:
+        st = gbrain_bruecke.status()
+    except Exception as exc:
+        return _item("gbrain", "gbrain (Gedächtnis-Zusatz)", "", "fehler", "konfiguration", hinweis=f"Status nicht prüfbar ({type(exc).__name__}).")
+    bereit = st["installiert"] and st["eingerichtet"]
+    zustand = "verbunden" if (st["eingeschaltet"] and bereit) else ("nicht_eingerichtet" if not st["eingeschaltet"] else "unvollstaendig")
+    return _item("gbrain", "gbrain (Gedächtnis-Zusatz)", "Zusätzliche Suche im Abbild deiner bestätigten Erinnerungen – nur lesen", zustand, "konfiguration",
+                 details=[f"Führend bleibt {st['fuehrend']}",
+                          "CLI installiert, lokales Brain eingerichtet" if bereit else ("CLI installiert, Brain noch nicht eingerichtet" if st["installiert"] else "CLI nicht installiert"),
+                          "Embeddings an – importierte Texte gehen an den Embedding-Anbieter" if st["embedding"] else "ohne Embedding-Anbieter: nichts verlässt den Rechner",
+                          f"Letzte geprüfte Sicherung: {st['letzte_sicherung'].replace(str(config.data_dir()), '~/.jarvis') or 'keine'}",
+                          f"Letzter Export: {st['letzter_export'] or 'keiner'}"],
+                 hinweis="" if zustand == "verbunden" else ("Ausgeschaltet. Jarvis nutzt nur das SQLite-Gedächtnis." if not st["eingeschaltet"] else "Eingeschaltet, aber noch nicht vollständig eingerichtet."),
+                 schritte=[] if zustand == "verbunden" else [
+                     "Sichern und prüfen: python scripts/gedaechtnis.py sichern",
+                     "Exportieren und spiegeln: python scripts/gedaechtnis.py exportieren && python scripts/gedaechtnis.py gbrain",
+                     "Einschalten: JARVIS_GBRAIN=an oder \"gbrain\": \"an\" in ~/.jarvis.json, dann ./jarvis-start.sh neustart"])
 
 
 def _mapbox_token() -> bool:

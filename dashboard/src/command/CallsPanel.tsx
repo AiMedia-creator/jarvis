@@ -84,7 +84,7 @@ export function CallsPanel({ data, error, onAsk, canAsk, days, onDays, onStartSk
     { id: "abschluss", label: "Abschluss", match: (c) => c.ergebnis === "abschluss" },
     { id: "ruhend", label: "Kein Interesse / nicht erreicht", match: (c) => ["kein_interesse", "nicht_erreicht", "falsche_nummer"].includes(c.ergebnis) },
   ];
-  const due = data.letzte_anrufe.filter((c) => c.naechster_schritt && c.frist && c.frist <= today).sort((a, b) => a.frist.localeCompare(b.frist));
+  const due = data.letzte_anrufe.filter((c) => !c.lead_id && c.naechster_schritt && c.frist && c.frist <= today).sort((a, b) => a.frist.localeCompare(b.frist));
   const undocumented = data.letzte_anrufe.filter((c) => ["rueckruf", "interesse"].includes(c.ergebnis) && !c.naechster_schritt);
   const noProfile = data.projekte.filter((p) => p.aktiv && (!p.zielgruppe || !p.leitfaden));
   return (
@@ -127,7 +127,7 @@ export function CallsPanel({ data, error, onAsk, canAsk, days, onDays, onStartSk
                 );
               })}
             </div>
-            <p className="cc-source">Stufen ergeben sich aus dem Ergebnis des jeweils erfassten Anrufs (höchstens 30 angezeigt). Keine CRM-Daten, keine Umsatzprognose.</p>
+            <p className="cc-source">Aus erfassten Anrufen (höchstens 30). Keine Umsatzprognose.</p>
           </section>
           <section className="cc-card-box">
             <header><h3>Projekte</h3></header>
@@ -171,12 +171,12 @@ export function CallsPanel({ data, error, onAsk, canAsk, days, onDays, onStartSk
             {undocumented.length === 0 ? <p className="cc-empty">Alle Gespräche mit Rückruf oder Interesse haben einen nächsten Schritt.</p> : (
               <ul className="cc-call-list">{undocumented.map((c) => <li key={c.id} className="cc-call"><strong>{c.firma || c.lead_name}</strong><span> · {data.ergebnisse[c.ergebnis] ?? c.ergebnis} am {when(c.erstellt)}</span></li>)}</ul>
             )}
-            <p className="cc-source">Jarvis kennt nur Anrufe, die du diktiert hast. Geführte, aber nicht erfasste Anrufe tauchen nirgends auf – es gibt keine Telefonanlagen-Anbindung.</p>
+            <p className="cc-source">Gezählt wird nur, was du erfasst hast – es gibt keine Telefonanlagen-Anbindung.</p>
           </section>
           <section className="cc-card-box">
             <header><h3>Erfasste Anrufe</h3></header>
             {data.letzte_anrufe.length === 0 ? (
-              <p className="cc-empty">Noch kein Anruf erfasst. Nach einem Gespräch kurz diktieren: „Anruf bei …, Ergebnis …, nächster Schritt … bis …“.
+              <p className="cc-empty">Noch kein Anruf erfasst.
                 {canAsk && <> <button type="button" className="cc-link" onClick={() => onAsk("Ich diktiere dir gleich das Ergebnis eines Anrufs. Frag nach, was fehlt.")}>Diktat starten</button></>}</p>
             ) : <ul className="cc-call-list">{data.letzte_anrufe.map((c) => <Row key={c.id} call={c} results={data.ergebnisse} project={names.get(c.projekt_id) ?? c.projekt_id} />)}</ul>}
           </section>
@@ -185,19 +185,18 @@ export function CallsPanel({ data, error, onAsk, canAsk, days, onDays, onStartSk
 
       {tab === "vorbereiten" && (
         <>
-          <p className="cc-source">Ablauf: Lead → Recherche → Entscheider → Vorbereitung → Anruf → Ergebnis dokumentieren → Follow-up → CRM → nächste Umsatzaktion.</p>
           {canAsk ? <div className="cc-grid two">{PREP.map((p) => <PrepCard key={p.skill} item={p} onAsk={onAsk} onStartSkill={onStartSkill} />)}</div>
-            : <p className="cc-empty">Nur Ansicht: Ein anderes Jarvis-Fenster hält gerade die Steuerung.</p>}
-          <section className="cc-card-box sp-legal" aria-label="Rechtlicher Rahmen">
-            <header><h3>Kaltakquise in Deutschland – worauf Jarvis achtet</h3></header>
+            : <p className="cc-empty">Nur Ansicht: Ein anderes Fenster steuert gerade.</p>}
+          <details className="cc-card-box sp-legal" aria-label="Rechtlicher Rahmen">
+            <summary><h3>Rechtlicher Rahmen der Kaltakquise (UWG § 7)</h3></summary>
             <ul>
               <li>Verbraucher (B2C): Werbeanrufe nur mit vorheriger ausdrücklicher Einwilligung (§ 7 Abs. 2 Nr. 1 UWG); die Einwilligung muss dokumentiert und fünf Jahre aufbewahrt werden (§ 7a UWG).</li>
               <li>Unternehmen (B2B): nur bei mutmaßlicher Einwilligung – es braucht einen konkreten sachlichen Bezug zum Geschäft des Angerufenen. Eine öffentlich auffindbare Nummer allein genügt nicht.</li>
               <li>Rufnummer nicht unterdrücken (§ 15 Abs. 2 TTDSG/TDDDG). Widerspruch respektieren und festhalten.</li>
               <li>Private oder ungeklärte Nummern kennzeichnet Jarvis und empfiehlt sie nicht zum Anruf.</li>
             </ul>
-            <p className="cc-source">Keine Rechtsberatung. Stand der Hinweise: Gesetzeslage nach UWG § 7/§ 7a; im Zweifel vor einer Kampagne rechtlich prüfen lassen.</p>
-          </section>
+            <p className="cc-source">Keine Rechtsberatung. Im Zweifel vor einer Kampagne rechtlich prüfen lassen.</p>
+          </details>
         </>
       )}
     </div>

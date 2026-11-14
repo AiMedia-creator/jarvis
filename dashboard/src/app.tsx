@@ -10,13 +10,12 @@ import React, {
 } from "react";
 import { createRoot } from "react-dom/client";
 import { AudioEngine } from "./audio";
-import { Dock } from "./components/Dock";
-import { VoiceCore } from "./components/VoiceCore";
 import { UiSync } from "./sync";
 import { Telemetry } from "./command/telemetry";
-import { RealtimeSession, flushTranscripts, pendingSaveState, type SaveState } from "./command/realtime";
+import { RealtimeSession, flushTranscripts, friendlyRealtimeError, pendingSaveState, type SaveState } from "./command/realtime";
 import { loadPrefs, savePrefs, type VoicePrefs } from "./command/SettingsDialog";
-import { api } from "./command/api";
+import { api, ApiError, setOwnerProof } from "./command/api";
+import { onPendingCommand, takePendingCommands } from "./command/commandWindow";
 import type {
   Config,
   Log,
@@ -39,6 +38,11 @@ const MarketView = lazy(() => import("./views/MarketView"));
 const CamerasView = lazy(() => import("./views/CamerasView"));
 const OpsView = lazy(() => import("./views/OpsView"));
 const CommandView = lazy(() => import("./views/CommandView"));
+const CommandWindow = lazy(() => import("./views/CommandWindow"));
+/** Ansichten, die das Command-Center-Fenster ans Dashboard weiterreicht (Karte und Gespräch bleiben dort). */
+const FORWARD_LABEL: Partial<Record<ContentView, string>> = {
+  news: "Nachrichten", market: "Märkte", cameras: "Kameras", ops: "Systemprotokoll", memory: "Gedächtnis", command: "Dashboard",
+};
 
 export function openOpsWindow(room: string): void {
   window.open(`?room=${encodeURIComponent(room)}&screen=ops`, "jarvis-ops", "popup,width=820,height=960");
@@ -176,26 +180,33 @@ export function App() {
   const { config, tokenView, offline, submitToken } = useConfig();
   const params = useMemo(() => new URLSearchParams(location.search), []);
   const ops = params.get("screen") === "ops";
+  // Command Center: eigenes Fenster mit eigenem Raum. Der Server gibt die Steuerung dem ersten Hauptfenster eines
+  // Raums – im Raum des Dashboards wäre dieses Fenster nur Beobachter und dürfte weder sprechen noch senden.
+  const cmd = params.get("screen") === "command";
   const room = useMemo(() => {
+    const key = cmd ? "jarvis-room-command" : "jarvis-room";
     const existing =
-      params.get("room") || localStorage.getItem("jarvis-room") || uid("room");
+      params.get("room") || localStorage.getItem(key) || uid("room");
     const value = /^[a-zA-Z0-9_-]{8,64}$/.test(existing)
       ? existing
       : uid("room");
-    localStorage.setItem("jarvis-room", value);
+    localStorage.setItem(key, value);
     return value;
-  }, [params]);
+  }, [params, cmd]);
   const client = useMemo(() => uid(ops ? "ops" : "main"), [ops]);
   const [role, setRole] = useState<Role>("observer");
   const [status, setStatus] = useState<Status>("idle");
   const [metrics, setMetrics] = useState<Metrics>(initialMetrics);
   const [logs, setLogs] = useState<Log[]>([]);
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
+  // Memory v1: welche gespeicherten Erinnerungen für welche Antwort (stream_id) mitgeschickt wurden.
+  const [memoryUse, setMemoryUse] = useState<Record<string, { id: string; inhalt: string }[]>>({});
+  const turnRef = useRef<string | null>(null);
   const [view, setView] = useState<ViewState | null>(null);
   const [selectedCamera, setSelectedCamera] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
   const [micOn, setMicOn] = useState(false);
-  const [text, setText] = useState("");
+  const [forwarded, setForwarded] = useState<string | null>(null);
   const audioWsRef = useRef<WebSocket | null>(null);
   const audioRef = useRef<AudioEngine | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -203,13 +214,15 @@ export function App() {
   // Ansicht: zentraler Reducer. Liegt AUSSERHALB des Verbindungs-Effekts, damit ein Ansichtswechsel
   // nie WebSocket, AudioEngine, Mikrofon oder Raum neu initialisiert.
   const [viewModel, dispatchView] = useReducer(viewReducer, initialView);
-  const [interruptedAt, setInterruptedAt] = useState(-Infinity);
+  const [, setInterruptedAt] = useState(-Infinity);
   // Messung der Sprachkette: lebt so lange wie die Seite (Neuverbinden setzt sie nicht zurück, Neuladen schon).
   const [telemetry] = useState(() => new Telemetry());
   const [muted, setMuted] = useState(false);
   const mutedRef = useRef(false);
   const realtimeRef = useRef<RealtimeSession | null>(null);
   const [voiceMode, setVoiceMode] = useState<"studio" | "echtzeit">("studio");
+  // Bleibender Hinweis, wenn der Anbieter das Echtzeit-Gespräch beendet hat (der kurze Fehlerzustand verschwindet nach 8 s).
+  const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
   // Speicherstatus der erkannten Echtzeit-Äußerungen (gespeichert / ausstehend / fehlgeschlagen).
   const [transcriptSave, setTranscriptSave] = useState<SaveState>(() => pendingSaveState());
   useEffect(() => { void flushTranscripts(setTranscriptSave); }, []);
@@ -284,7 +297,10 @@ export function App() {
 
   const applyView = useCallback((next: ViewState) => setView(next), []);
   const interrupt = useCallback(() => {
-    audioRef.current?.manualStop();
+    // Ohne AudioEngine (Dashboard-Fenster) den laufenden Zug direkt beim Server stoppen.
+    if (audioRef.current) audioRef.current.manualStop();
+    else if (turnRef.current && wsRef.current?.readyState === WebSocket.OPEN)
+      wsRef.current.send(JSON.stringify({ type: "STOP_STREAM", stream_id: turnRef.current, reason: "manual" }));
     setInterruptedAt(performance.now());
   }, []);
 
@@ -304,7 +320,8 @@ export function App() {
     const unsubscribe = syncRef.current.subscribe((next) => {
       if (next.view) applyView(next.view);
       if (next.cameraId !== undefined) setSelectedCamera(next.cameraId);
-      if (next.content)
+      // Das Command-Center-Fenster folgt nicht der Navigation des Dashboards.
+      if (next.content && !cmd)
         dispatchView({ type: "sync", view: next.content.view, query: next.content.query });
     });
     const disconnectAudio = () => {
@@ -349,6 +366,8 @@ export function App() {
           case "WELCOME": {
             const snapshot = message.snapshot;
             setRole(message.role === "owner" ? "owner" : "observer");
+            // Besitzer-Ticket für Lead-Schreibzugriffe (nur im Speicher); Beobachter bekommen keins.
+            setOwnerProof(room, message.role === "owner" && typeof message.owner_ticket === "string" ? message.owner_ticket : null);
             setStatus(snapshot.status);
             if (snapshot.view) {
               setView(snapshot.view);
@@ -363,7 +382,8 @@ export function App() {
                 : "Observer-Modus: Steuerung und Audio gesperrt.",
               message.role === "owner" ? "info" : "warn",
             );
-            if (message.role === "owner" && !ops && !audioWsRef.current) {
+            // Sprache gibt es nur im Command-Center-Fenster: das Dashboard öffnet weder Audio-Kanal noch Mikrofon.
+            if (message.role === "owner" && cmd && !audioWsRef.current) {
               const audio = new AudioEngine({
                 state: setStatus,
                 log: addLog,
@@ -409,6 +429,7 @@ export function App() {
             break;
           }
           case "TURN_START":
+            turnRef.current = message.stream_id ? String(message.stream_id) : null;
             audioRef.current?.turnStarted(message.stream_id);
             dispatchView({ type: "turn", stream: String(message.stream_id) });
             break;
@@ -436,6 +457,15 @@ export function App() {
           case "LOG":
             addLog(message.message, message.level);
             break;
+          case "MEMORY":
+            if (Array.isArray(message.erinnerungen) && message.erinnerungen.length && turnRef.current) {
+              const stream = turnRef.current;
+              const items = message.erinnerungen
+                .filter((e: any) => e && typeof e.id === "string" && typeof e.inhalt === "string")
+                .slice(0, 5).map((e: any) => ({ id: e.id, inhalt: e.inhalt.slice(0, 160) }));
+              setMemoryUse((old) => ({ ...Object.fromEntries(Object.entries(old).slice(-40)), [stream]: items }));
+            }
+            break;
           case "METRICS":
             setMetrics((old) => ({ ...old, ...message }));
             break;
@@ -461,6 +491,7 @@ export function App() {
             break;
           case "RESET_DONE":
             setTranscripts([]);
+            setMemoryUse({});
             break;
           case "ERROR":
             addLog(message.message, "warn");
@@ -471,6 +502,7 @@ export function App() {
         if (!current()) return;
         setConnected(false);
         telemetry.setConnected(false);
+        setOwnerProof(room, null);  // das Ticket ist serverseitig mit der Verbindung erloschen
         disconnectAudio();
         wsRef.current = null;
         if (!closedRef.current) {
@@ -499,7 +531,7 @@ export function App() {
       wsRef.current = null;
       setConnected(false);
     };
-  }, [addLog, applyPrefs, applyView, client, config, ops, room, stopControl, telemetry, tokenView]);
+  }, [addLog, applyPrefs, applyView, client, cmd, config, ops, room, stopControl, telemetry, tokenView]);
 
   const publishUi = useCallback(
     (next: { view?: ViewState; cameraId?: string | null }) =>
@@ -519,8 +551,9 @@ export function App() {
     telemetry.realtimeState(null);
     setVoiceMode("studio");
   }, [telemetry]);
-  const startRealtime = useCallback(async () => {
-    if (role !== "owner" || realtimeRef.current) return;
+  const startRealtime = useCallback(async (): Promise<string | null> => {
+    if (role !== "owner" || realtimeRef.current) return null;
+    setVoiceNotice(null);
     // Studio zuerst vollständig freigeben: laufenden Strom stoppen, Wiedergabe leeren, Mikrofon-Tracks beenden.
     audioRef.current?.manualStop();
     audioRef.current?.stopPlayback();
@@ -545,7 +578,7 @@ export function App() {
           telemetry.realtimeState(null);
           setVoiceMode("studio");
           // Nicht stumm verschwinden: wer die Sitzung beendet hat, steht als Fehler bzw. im Protokoll.
-          if (reason) telemetry.realtimeError(reason);
+          if (reason) { telemetry.realtimeError(reason); setVoiceNotice(`${reason} Du bist wieder im Studio-Modus.`); }
           addLog(reason ?? "Echtzeit-Gespräch beendet; Studio-Modus aktiv (Mikro erst nach „Mikro (M)“).", reason ? "warn" : "info");
         }
       },
@@ -553,14 +586,19 @@ export function App() {
     realtimeRef.current = session;
     try {
       await session.start(prefsRef.current.pause, mutedRef.current);
+      return null;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (realtimeRef.current === session) realtimeRef.current = null;
+      // Meldungen des Jarvis-Servers (z. B. fehlende ElevenLabs-Berechtigung) sind schon Klartext; Browserfehler übersetzen.
+      const message = error instanceof ApiError ? error.message : friendlyRealtimeError(error);
+      const wasCurrent = realtimeRef.current === session;
+      if (wasCurrent) realtimeRef.current = null;
       await session.end();
+      if (!wasCurrent) return null; // inzwischen vom Nutzer abgebrochen: kein Fehler
       telemetry.realtimeState(null);
-      telemetry.realtimeError(`Echtzeit nicht gestartet: ${message}`);
+      telemetry.realtimeError(`Nicht gestartet. ${message}`); // die Anzeige stellt „Echtzeit:“ voran
       setVoiceMode("studio");
       addLog(`Echtzeit nicht gestartet: ${message}`, "warn");
+      return `Echtzeit nicht gestartet: ${message}`;
     }
   }, [addLog, role, telemetry]);
   useEffect(() => () => void realtimeRef.current?.end(), []);
@@ -584,17 +622,12 @@ export function App() {
     telemetry.noteTyped();
     send({ type: "USER_TEXT", text: value.slice(0, 8000) });
   }, [role, send, stopControl, telemetry]);
-  const sendText = async () => {
-    const value = text.trim();
-    if (!value || role !== "owner") return;
-    // Audio-Freigabe anstoßen, aber nie darauf warten: Text muss auch ohne Wiedergabe-Freigabe ankommen.
-    void audioRef.current?.unlockPlayback().catch(() => undefined);
-    audioRef.current?.stopPlayback();
-    stopControl("new_turn");
-    telemetry.noteTyped();
-    send({ type: "USER_TEXT", text: value.slice(0, 8000) });
-    setText("");
-  };
+  // Aufträge, die das Dashboard übergibt: einmal beim Start (sobald dieses Fenster steuert) und danach laufend.
+  useEffect(() => {
+    if (!cmd || role !== "owner") return;
+    for (const text of takePendingCommands()) askJarvis(text);
+    return onPendingCommand(askJarvis);
+  }, [askJarvis, cmd, role]);
 
   // Wertpapier-Namen für die Absichtserkennung (eine Quelle: Backend-Verzeichnis).
   useEffect(() => {
@@ -610,19 +643,29 @@ export function App() {
   // Ansicht an andere Fenster spiegeln (nur UI-Zustand, nie Audio oder Tokens).
   useEffect(() => {
     if (viewModel.revision === 0 || viewModel.origin === "sync" || ops) return;
+    if (cmd) {
+      // Karte und Gespräch bleiben im Command Center; alles andere öffnet das Dashboard-Fenster.
+      if (viewModel.view === "conversation" || viewModel.view === "world") return;
+      syncRef.current?.publish({ content: { view: viewModel.view, query: viewModel.query } });
+      setForwarded(`${FORWARD_LABEL[viewModel.view] ?? "Ansicht"} im Dashboard-Fenster geöffnet`);
+      dispatchView({ type: "back" });
+      return;
+    }
     syncRef.current?.publish({ content: { view: viewModel.view, query: viewModel.query } });
-  }, [ops, viewModel.revision, viewModel.origin, viewModel.view, viewModel.query]);
+  }, [cmd, ops, viewModel.revision, viewModel.origin, viewModel.view, viewModel.query]);
+  const toDashboard = useCallback((section: string) => {
+    syncRef.current?.publish({ content: { view: "command", query: section } });
+    try {
+      if (window.opener && !window.opener.closed) window.opener.focus();
+      else window.open(location.pathname, "jarvis-dashboard");
+    } catch { /* Fokus ist Sache des Browsers; der Abschnitt ist trotzdem umgeschaltet */ }
+  }, []);
 
   const showView = useCallback((next: ContentView, query?: string) => {
     if (next === "conversation") dispatchView({ type: "back" });
     else dispatchView({ type: "manual", view: next, query });
   }, []);
   const back = useCallback(() => dispatchView({ type: "back" }), []);
-  const levels = useCallback(
-    () => audioRef.current?.levels() ?? { input: 0, output: 0 },
-    [],
-  );
-
   if (tokenView) return <AuthScreen submit={submitToken} />;
   if (!config)
     return (
@@ -656,88 +699,48 @@ export function App() {
     : offline
       ? "Server-Konfiguration nicht erreichbar."
       : null;
-  // Arbeitsbereich (Dashboard) ist die Startseite; Gespräch, Kommandozentrale und Weltansicht leben darin.
-  // „Gedächtnis“ (auch per Sprachbefehl) öffnet das Gedächtnis-Center im Arbeitsbereich.
-  const workspace = current === "conversation" || current === "command" || current === "world" || current === "memory";
-  if (workspace)
+  if (cmd)
     return (
-      <div className="stage workspace" data-view={current} data-demo={config.demo || undefined}>
+      <div className="stage workspace" data-view="command-center" data-demo={config.demo || undefined}>
         <Suspense fallback={<div className="view-loading">…</div>}>
-          <CommandView
-            query={current === "command" ? viewModel.query : undefined}
-            section={current === "world" ? "welt" : current === "memory" ? "gedaechtnis" : undefined}
-            worldQuery={current === "world" ? viewModel.query : undefined}
-            role={role}
-            connected={connected}
-            onAsk={askJarvis}
-            onView={(next) => showView(next)}
-            transcripts={transcripts}
-            status={status}
-            audio={audioRef.current}
-            micOn={micOn}
-            onMicChange={setMicOn}
-            onLog={addLog}
-            onStop={interrupt}
-            telemetry={telemetry}
-            muted={muted}
-            onMutedChange={setMuted}
-            voiceMode={voiceMode}
-            transcriptSave={transcriptSave}
-            onRetryTranscripts={() => void flushTranscripts(setTranscriptSave)}
-            onStartRealtime={startRealtime}
-            onStopRealtime={stopRealtime}
-            getRealtime={getRealtime}
-            voicePrefs={voicePrefs}
-            onVoicePrefs={setVoicePrefs}
-            onReset={resetConversation}
-            room={room}
+          <CommandWindow
+            telemetry={telemetry} audio={audioRef.current} role={role} connected={connected} transcripts={transcripts}
+            micOn={micOn} onMicChange={setMicOn} muted={muted} onMutedChange={setMuted} onAsk={askJarvis} onStop={interrupt} onLog={addLog}
+            voiceMode={voiceMode} onStartRealtime={startRealtime} onStopRealtime={stopRealtime} getRealtime={getRealtime}
+            prefs={voicePrefs} onPrefs={setVoicePrefs} onReset={resetConversation} room={room} memoryUse={memoryUse}
+            mapQuery={current === "world" ? viewModel.query ?? "" : null} onCloseMap={back} onDashboard={toDashboard}
+            forwarded={forwarded} demo={config.demo} voiceNotice={voiceNotice}
           />
         </Suspense>
-        {config.demo && <div className="demo-mark">Demo</div>}
         {alert && <div className="ws-alert" role="status">{alert}</div>}
       </div>
     );
+  // Dashboard: eine Schiene für alles. „Mehr“-Ansichten laufen im selben Rahmen; Sprache liegt im Command Center.
+  const more =
+    current === "news" ? <NewsView query={viewModel.query} onBack={back} />
+    : current === "market" ? <MarketView query={viewModel.query} onBack={back} onPick={(symbol) => showView("market", symbol)} />
+    : current === "cameras" ? <CamerasView cameras={cameras} selected={selectedCamera} onSelect={chooseCamera} demo={config.demo} onBack={back} />
+    : current === "ops" ? <OpsView metrics={metrics} transcripts={transcripts} logs={logs} status={status} room={room} onBack={back} onOpenSecond={() => openOpsWindow(room)} />
+    : null;
   return (
-    <div className="stage" data-view={current} data-demo={config.demo || undefined}>
-      <div className="content-layer" key={viewModel.revision} aria-live="polite">
-        <Suspense fallback={<div className="view-loading">…</div>}>
-          {current === "news" && <NewsView query={viewModel.query} onBack={back} />}
-          {current === "market" && (
-            <MarketView query={viewModel.query} onBack={back} onPick={(symbol) => showView("market", symbol)} />
-          )}
-          {current === "cameras" && (
-            <CamerasView cameras={cameras} selected={selectedCamera} onSelect={chooseCamera} demo={config.demo} onBack={back} />
-          )}
-          {current === "ops" && (
-            <OpsView
-              metrics={metrics}
-              transcripts={transcripts}
-              logs={logs}
-              status={status}
-              room={room}
-              onBack={back}
-              onOpenSecond={() => openOpsWindow(room)}
-            />
-          )}
-        </Suspense>
-      </div>
-      <VoiceCore status={status} interruptedAt={interruptedAt} levels={levels} compact onActivate={back} />
+    <div className="stage workspace" data-view={current} data-demo={config.demo || undefined}>
+      <Suspense fallback={<div className="view-loading">…</div>}>
+        <CommandView
+          query={current === "command" ? viewModel.query : undefined}
+          section={current === "world" ? "welt" : current === "memory" ? "gedaechtnis" : undefined}
+          worldQuery={current === "world" ? viewModel.query : undefined}
+          role={role}
+          connected={connected}
+          onAsk={askJarvis}
+          onView={(next) => showView(next)}
+          voiceMode={voiceMode}
+          transcriptSave={transcriptSave}
+          onRetryTranscripts={() => void flushTranscripts(setTranscriptSave)}
+          more={more ? { id: current, node: <Suspense fallback={<div className="view-loading">…</div>}>{more}</Suspense> } : null}
+        />
+      </Suspense>
       {config.demo && <div className="demo-mark">Demo</div>}
-      <Dock
-        audio={audioRef.current}
-        role={role}
-        micOn={micOn}
-        onMicChange={setMicOn}
-        onLog={addLog}
-        text={text}
-        onText={setText}
-        onSend={() => void sendText()}
-        onStop={interrupt}
-        view={current}
-        onView={(next) => showView(next)}
-        onOpenSecond={() => openOpsWindow(room)}
-        alert={alert}
-      />
+      {alert && <div className="ws-alert" role="status">{alert}</div>}
     </div>
   );
 }

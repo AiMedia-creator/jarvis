@@ -103,6 +103,12 @@ export type Settings = {
   eleven_tts_model: string; eleven_tts_modelle: string[]; google: boolean; hubspot: boolean; demo?: boolean;
   /** Auswahl über alle Anbieter (Anthropic, Moonshot, Ollama) mit Grund, falls nicht eingerichtet. Fehlt bei älterem Server. */
   modell_auswahl?: ModelChoice[]; anbieter?: string;
+  /** Ersatzmodell bei Überlastung/Ratenlimit (gleicher Anbieter), null = keins. */
+  backup_key?: string | null;
+  /** Memory v1: dürfen passende Erinnerungen an Cloud-Anbieter gehen? (Ollama lokal immer) */
+  erinnerungen_an_cloud?: boolean; anbieter_cloud?: boolean;
+  /** Gesprächssprache: de, arz (Ägyptisch) oder auto. Fehlt bei älterem Server. */
+  sprache?: "de" | "arz" | "auto"; sprachen?: { id: string; name: string }[]; stimme_arabisch?: string;
 };
 export type ModelChoice = {
   key: string; anbieter: "anthropic" | "moonshot" | "ollama"; anbieter_name: string; modell: string; name: string;
@@ -120,6 +126,8 @@ export type CallRecord = {
   id: string; projekt_id: string; erstellt: number; lead_name: string; firma: string; rolle: string; telefon_status: string;
   kontakt_quelle: string; ergebnis: string; notiz: string; naechster_schritt: string; frist: string; crm_status: string;
   dauer_s: number | null; auftrag_id: string;
+  /** Gesetzt, wenn der Anruf im CRM an einem Lead erfasst wurde – Follow-ups führt dann der Lead, nicht diese Zeile. */
+  lead_id?: string;
 };
 export type CallStats = {
   zeitraum_tage: number; gespraeche: number; nach_ergebnis: Record<string, number>; termine: number; termine_pro_100: number | null;
@@ -127,6 +135,29 @@ export type CallStats = {
   ohne_naechsten_schritt?: number; telefon_ungeklaert?: number; ohne_kontaktquelle?: number; mittlere_dauer_s: number | null; quelle: string; stand: string;
 };
 export type CallOverview = { projekte: CallProject[]; kennzahlen: CallStats; letzte_anrufe: CallRecord[]; ergebnisse: Record<string, string> };
+/** Cold-Call-CRM: Lead mit Status, Kontakt, nächstem Schritt und Verlauf (jarvis/leads.py). */
+export type LeadStatusDef = { id: string; titel: string; offen: boolean; ergebnis: boolean; ton: "neutral" | "warn" | "arbeit" | "ok" | "danger" };
+export type Lead = {
+  id: string; version: number; erstellt: number; geaendert: number; status: string;
+  firma: string; name: string; rolle: string; telefon: string; email: string; website: string; ort: string; quelle: string;
+  telefon_status: string; projekt_id: string; notiz: string; naechster_schritt: string; followup_am: string;
+  termin_beginn: string; termin_ende: string; letzte_aktivitaet: number | null; letzte_aktivitaet_text: string; anrufe: number;
+};
+export type LeadActivity = { id: string; zeit: number; art: "anruf" | "notiz"; status?: string; notiz?: string; followup_am?: string; termin_beginn?: string; naechster_schritt?: string };
+export type LeadOverview = {
+  status: LeadStatusDef[]; leads: Lead[]; zahlen: Record<string, number>; gesamt: number; offen: number;
+  followups_faellig: number; heute: string; csv_spalten: string[];
+  /** Seiten über den vollständigen Bestand: `leads` ist nur die aktuelle Seite, `treffer` die Zahl aller Treffer. */
+  treffer: number; offset: number; limit: number; snapshot: string; snapshot_neu: boolean; um_position: number | null;
+  csv_max_bytes: number; csv_max_zeilen: number;
+};
+export type LeadPage = { offset?: number; limit?: number; snapshot?: string; um?: string };
+export type LeadSession = { seit: number; calls: number; nach_status: Record<string, number>; letzter: number | null; stand: number };
+export type LeadOutcome = { status: string; notiz?: string; followup_am?: string; naechster_schritt?: string; termin_beginn?: string; termin_ende?: string; kalender?: boolean };
+export type LeadImportReport = {
+  neu: number; importiert: number; fehler_gesamt: number; duplikate_gesamt: number; zeilen?: number;
+  fehler: { zeile: number; grund: string }[]; duplikate: { zeile: number; lead: string; grund: string }[];
+};
 export type ContentHook = { text: string; belegt_durch?: string; klarheit?: number; relevanz?: number; neugier?: number; belegbarkeit?: number; summe?: number | null };
 export type ContentItem = {
   id: string; version: number; status: string; titel: string; thema: string; ziel: string; zielgruppe: string; plattformen: string[];
@@ -177,7 +208,8 @@ export type JobStep = {
   ergebnis: string | null; fehler: string | null; freigabe_id?: string | null;
 };
 export type AgentJob = {
-  id: string; titel: string; art: string; status: string; agent: { id: string; name: string; art: string }; unteragenten: string[];
+  id: string; titel: string; art: string; /** Vom Server: "job" oder "gespraech". Fehlt bei älterem Server. */ klasse?: "job" | "gespraech";
+  status: string; agent: { id: string; name: string; art: string }; unteragenten: string[];
   gespraech: string; start: number; ende: number | null; letzte_aktivitaet: number; schritte: JobStep[];
   schritte_gesamt: number; schritte_fertig: number; fortschritt: string; werkzeuge: string[];
   ergebnis: string | null; fehler: string | null; unterbrochen_durch_neustart: boolean; freigaben: string[];
@@ -232,11 +264,22 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Besitzernachweis für Lead-Schreibzugriffe: Der Server gibt dem Besitzer eines Raums beim Beitritt ein Ticket (WELCOME,
+ * nur über dessen Steuerverbindung). Es liegt nur im Arbeitsspeicher dieses Fensters, nie in localStorage oder der Adresse.
+ */
+let ownerProof: { room: string; ticket: string } | null = null;
+export function setOwnerProof(room: string, ticket: string | null | undefined) {
+  ownerProof = ticket ? { room, ticket } : null;
+}
+const ownerHeaders = (url: string): Record<string, string> =>
+  ownerProof && url.startsWith("/api/leads") ? { "X-Jarvis-Room": ownerProof.room, "X-Jarvis-Owner": ownerProof.ticket } : {};
+
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
   const response = await fetch(url, {
     method,
-    headers: body === undefined ? (method === "GET" ? {} : { "X-Jarvis": "1" })
-      : { "Content-Type": "application/json", "X-Jarvis": "1" },
+    headers: body === undefined ? (method === "GET" ? {} : { "X-Jarvis": "1", ...ownerHeaders(url) })
+      : { "Content-Type": "application/json", "X-Jarvis": "1", ...ownerHeaders(url) },
     body: body === undefined ? undefined : JSON.stringify(body),
     credentials: "same-origin",
   });
@@ -268,7 +311,8 @@ export const api = {
   jobs: () => call<{ jobs: Job[] }>("GET", "/api/jobs"),
   automations: () => call<Automations>("GET", "/api/automations"),
   settings: () => call<Settings>("GET", "/api/settings"),
-  saveSettings: (changes: Partial<{ stimme: string; tempo: number; modell: string; eleven_tts_model: string }>) =>
+  saveSettings: (changes: Partial<{ stimme: string; tempo: number; modell: string; eleven_tts_model: string; backup_modell: string;
+    erinnerungen_an_cloud: boolean; sprache: string; stimme_arabisch: string }>) =>
     call<Settings>("POST", "/api/settings", changes),
   ttsPreview: (text: string, stimme?: string) => call<{ mime: string; audio: string }>("POST", "/api/tts/preview", { text, stimme }),
   realtimeSession: (pause: number) => call<{ signed_url: string; agent_id: string; werkzeuge: string[] }>("POST", "/api/realtime/session", { pause }),
@@ -286,6 +330,32 @@ export const api = {
   content: () => call<ContentOverview>("GET", "/api/content"),
   setContentStatus: (id: string, status: string) => call<{ eintrag: ContentItem }>("POST", "/api/content/status", { id, status }),
   calls: (tage = 7) => call<CallOverview>("GET", `/api/anrufe?tage=${tage}`),
+  leads: (status = "", q = "", page: LeadPage = {}) => call<LeadOverview>("GET",
+    `/api/leads?status=${encodeURIComponent(status)}&q=${encodeURIComponent(q)}&offset=${page.offset ?? 0}&limit=${page.limit ?? 50}`
+    + `&snapshot=${encodeURIComponent(page.snapshot ?? "")}&um=${encodeURIComponent(page.um ?? "")}`),
+  lead: (id: string) => call<{ lead: Lead; aktivitaeten: LeadActivity[] }>("GET", `/api/leads/${encodeURIComponent(id)}`),
+  leadSession: (seit: number) => call<LeadSession>("GET", `/api/leads/session?seit=${Math.floor(seit)}`),
+  createLead: (felder: Partial<Lead>, duplikat_bestaetigt = false, id = requestId()) =>
+    call<{ lead: Lead }>("POST", "/api/leads", { felder, duplikat_bestaetigt, request_id: id }),
+  updateLead: (lead: Lead, aenderungen: Partial<Lead>, duplikat_bestaetigt = false) =>
+    call<{ lead: Lead }>("PATCH", `/api/leads/${encodeURIComponent(lead.id)}`, { version: lead.version, aenderungen, duplikat_bestaetigt }),
+  /** Eine request_id je Klick: ein doppelter Klick oder Netz-Wiederholung erzeugt nie zwei Anrufe. */
+  leadOutcome: (lead: Lead, outcome: LeadOutcome, id = requestId()) =>
+    call<{ lead: Lead; aktivitaet_id: string; wiederholt: boolean; kalender?: { status: string; hinweis: string; freigabe_id?: string } }>(
+      "POST", `/api/leads/${encodeURIComponent(lead.id)}/ergebnis`, { ...outcome, version: lead.version, request_id: id }),
+  leadNote: (lead: Lead, text: string, id = requestId()) =>
+    call<{ lead: Lead }>("POST", `/api/leads/${encodeURIComponent(lead.id)}/notiz`, { text, request_id: id }),
+  /** Rohe Datei-Bytes (kein JSON): Das Limit von 1 MB gilt für die Datei selbst, und der Server prüft echtes UTF-8. */
+  importLeads: async (csv: Blob | ArrayBuffer | Uint8Array, ausfuehren: boolean): Promise<LeadImportReport> => {
+    const response = await fetch(`/api/leads/import?ausfuehren=${ausfuehren ? "true" : "false"}`, {
+      method: "POST", body: csv as BodyInit, credentials: "same-origin",
+      headers: { "X-Jarvis": "1", "Content-Type": "text/csv; charset=utf-8", ...ownerHeaders("/api/leads/import") },
+    });
+    let data: any = null;
+    try { data = await response.json(); } catch { data = null; }
+    if (!response.ok) throw new ApiError(response.status, data?.fehler || `Import fehlgeschlagen (${response.status})`, data);
+    return data;
+  },
   capabilities: () => call<Platform>("GET", "/api/faehigkeiten"),
   startCapability: (name: string, args: Record<string, unknown>) =>
     call<{ lauf: CapabilityRun }>("POST", "/api/faehigkeiten/starten", { name, args }),
@@ -297,7 +367,7 @@ export const api = {
   memoryCenter: (q = "", limit = 60) => call<MemoryCenterData>("GET", `/api/gedaechtnis?q=${encodeURIComponent(q)}&limit=${limit}`),
   memoryHistory: (id: string) => call<MemoryHistory>("GET", `/api/gedaechtnis/verlauf/${encodeURIComponent(id)}`),
   memoryExport: () => call<{ datei: string; wissen: number; versionen: number; archiv: number; exportiert: string; inhalt?: unknown }>("GET", "/api/gedaechtnis/export"),
-  memoryAction: (aktion: "speichern" | "aendern" | "bestaetigen" | "loeschen" | "archiv_loeschen" | "index_neu", body: Record<string, unknown> = {}) =>
+  memoryAction: (aktion: "speichern" | "aendern" | "bestaetigen" | "loeschen" | "archiv_loeschen" | "index_neu" | "alle_loeschen", body: Record<string, unknown> = {}) =>
     call<Record<string, any>>("POST", `/api/gedaechtnis/${aktion}`, body),
   transcript: (rolle: "user" | "agent", text: string, ref: string) =>
     call<{ id: string | null; status: string; duplicate?: boolean }>("POST", "/api/transkript", { rolle, text, ref }),

@@ -10,6 +10,7 @@ import { SettingsDialog, type VoicePrefs } from "./SettingsDialog";
 import { MiniLevel, SignalBand, type BandMeter } from "./SignalBand";
 import { fmtMs, TurnTape } from "./TurnTape";
 import { type StageKey, type Telemetry, type UiState, UI_STATES } from "./telemetry";
+import { VoiceOrb, type OrbState } from "./VoiceOrb";
 import "./center.css";
 
 const LABEL: Record<UiState, string> = {
@@ -73,6 +74,12 @@ function useNow(running: boolean, reduced: boolean): number {
   return now;
 }
 
+/** Überwiegend arabische Schrift? Dann läuft die Zeile von rechts nach links. */
+const rtl = (text: string) => {
+  const letters = text.match(/\p{L}/gu) ?? [];
+  return letters.length > 0 && letters.filter((c) => /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/.test(c)).length / letters.length >= 0.4;
+};
+
 const isTyping = (target: EventTarget | null) => {
   const el = target as HTMLElement | null;
   return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
@@ -106,7 +113,10 @@ export type CommandCenterProps = {
   settings?: Settings | null;
   onSettings?: (settings: Settings) => void;
   voiceMode?: "studio" | "echtzeit";
-  onStartRealtime?: () => Promise<void>;
+  /** Startet das Echtzeit-Gespräch; liefert bei Misserfolg die Meldung für den Nutzer. */
+  onStartRealtime?: () => Promise<string | null | void>;
+  /** Bleibender Hinweis zum Sprachmodus (z. B. „ElevenLabs hat das Gespräch beendet“). */
+  voiceNotice?: string | null;
   onStopRealtime?: () => Promise<void>;
   getRealtime?: () => RealtimeSession | null;
   prefs?: VoicePrefs;
@@ -124,6 +134,13 @@ export type CommandCenterProps = {
   focusSignal?: number;
   /** Raum (= Gespräch) für Dateianhänge; ohne Raum ist Anhängen aus. */
   room?: string;
+  /** Memory v1: je Antwort (stream_id) die mitgeschickten gespeicherten Erinnerungen. */
+  memoryUse?: Record<string, { id: string; inhalt: string }[]>;
+  onOpenMemory?: () => void;
+  /** Eigenes Fenster: zeigt den kreisförmigen Sprachassistenten über dem Gespräch. */
+  stage?: boolean;
+  /** Was Jarvis aus dem letzten Befehl verstanden hat (z. B. „Karte öffnen · Berlin“). */
+  understood?: string | null;
 };
 
 type PendingFile = { key: string; name: string; size: number; status: "laedt" | "bereit" | "fehler"; id?: string; info?: string };
@@ -144,7 +161,8 @@ export function CommandCenter({
   onStartRealtime = async () => undefined, onStopRealtime = async () => undefined, getRealtime = () => null,
   prefs = { pause: 1.2, barge: "frei", talkMode: "frei" }, onPrefs = () => undefined, onReset = () => undefined,
   platform = null, jobs = null, jobsError = null, busyJob = null,
-  onOpenJob = () => undefined, onCancelJob = () => undefined, focusSignal = 0, room,
+  onOpenJob = () => undefined, onCancelJob = () => undefined, focusSignal = 0, room, memoryUse = {}, onOpenMemory,
+  stage = false, understood = null, voiceNotice = null,
 }: CommandCenterProps) {
   const toolLabel = (name: string) => platform?.faehigkeiten.find((c) => c.name === name)?.titel ?? name;
   const realtimeMode = voiceMode === "echtzeit";
@@ -156,6 +174,7 @@ export function CommandCenter({
   const owner = role === "owner";
   const [text, setText] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => { if (voiceNotice) setNotice(voiceNotice); }, [voiceNotice]);
   const [permission, setPermission] = useState<PermissionState | "unbekannt">("unbekannt");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
@@ -224,8 +243,10 @@ export function CommandCenter({
     setNotice(null);
     setSwitching(true);
     try {
-      if (next === "echtzeit") await onStartRealtime();
-      else await onStopRealtime();
+      if (next === "echtzeit") {
+        const problem = await onStartRealtime();
+        if (problem) setNotice(problem);
+      } else await onStopRealtime();
     } finally {
       setSwitching(false);
     }
@@ -334,6 +355,7 @@ export function CommandCenter({
     [version, turns]);
   const lineCount = transcripts.length + realtimeLines.length;
   const lastText = transcripts[transcripts.length - 1]?.text ?? "";
+  const lastFinalAnswer = [...transcripts].reverse().find((t) => t.role === "assistant" && t.final)?.text.slice(0, 600) ?? "";
   useEffect(() => {
     const el = threadRef.current;
     if (el) el.scrollTop = el.scrollHeight;
@@ -366,14 +388,26 @@ export function CommandCenter({
   };
 
   const stateDetail = segmentContent(derived.active);
-  const micHint = realtimeMode ? "Echtzeit-Gespräch läuft" : micOn ? (ptt ? "Mikro an · Push-to-talk" : "Mikro an") : "Mikro aus";
+  // Sprachkreis: ein Zustand, ehrlich aus App-Fakten abgeleitet. „Mikrofon aktiv“ nur bei wirklich offenem Mikrofon.
+  // Echtzeit: Das Mikrofon gehört der ElevenLabs-Sitzung und ist erst offen, wenn sie steht – nicht schon beim Verbinden.
+  const connecting = realtimeMode && telemetry.realtime?.mode === "verbindet";
+  const micActive = realtimeMode ? !connecting : micOn;
+  const orbState: OrbState = derived.active === "offline" ? "offline" : derived.active === "fehler" ? "fehler"
+    : derived.active === "hoert" ? "hoert" : derived.active === "erkennt" || derived.active === "denkt" ? "verarbeitet"
+    : derived.active === "spricht" ? "antwortet" : permission === "denied" && !micActive ? "gesperrt" : "bereit";
+  const orbLevel = () => {
+    if (realtimeMode) { const s = getRealtime(); return (derived.active === "spricht" ? s?.outputVolume() : s?.inputVolume()) ?? 0; }
+    const l = audio?.levels();
+    return l ? (derived.active === "spricht" ? l.output : l.input) : 0;
+  };
+  const micHint = connecting ? "Echtzeit wird verbunden" : realtimeMode ? "Echtzeit-Gespräch läuft" : micOn ? (ptt ? "Mikro an · Push-to-talk" : "Mikro an") : "Mikro aus";
 
   return (
     <div className={`cc-center ${derived.active === "offline" ? "is-offline" : ""} ${diag ? "with-diag" : ""}`} data-state={derived.active}>
       <header className="cc-bar">
         <div className={`cc-now ${derived.active}`}>
           <Glyph state={derived.active} />
-          <strong>{LABEL[derived.active]}</strong>
+          <strong>{connecting && derived.active === "denkt" ? "Verbindet" : LABEL[derived.active]}</strong>
           {stateDetail}
           <span className="cc-now-mic">{micHint}{permission === "denied" ? " · blockiert" : ""}</span>
         </div>
@@ -396,17 +430,30 @@ export function CommandCenter({
         <button type="button" className="cc-btn small" onClick={() => setSettingsOpen(true)} aria-haspopup="dialog">Einstellungen</button>
       </header>
       <p className="cc-sr" role="status" aria-live="polite">Zustand: {LABEL[derived.active]}</p>
+      {/* Nur fertige Antworten ansagen – laufende Textstücke würden Screenreader bei jedem Token unterbrechen. */}
+      <p className="cc-sr" role="status" aria-live="polite">{lastFinalAnswer ? `Jarvis: ${lastFinalAnswer}` : ""}</p>
       {errorText && <p className="cc-alert" role="alert">{errorText}</p>}
       {notice && <p className="cc-alert soft" role="alert">{notice} <button type="button" className="cc-link" onClick={() => setNotice(null)}>OK</button></p>}
 
       <div className="cc-center-grid">
         <div className="cc-center-main">
-          <section className="cc-thread" ref={threadRef} aria-label="Gespräch mit Jarvis" aria-live="polite" tabIndex={0}
+          {stage && (
+            <div className="cc-orb-stage">
+              <VoiceOrb state={orbState} micActive={micActive} level={orbLevel} reduced={reduced} disabled={!owner || (switching && !realtimeMode)}
+                onToggle={() => void toggleMic()}
+                title={connecting ? "Verbindet" : undefined}
+                hint={connecting ? "Echtzeit-Gespräch wird bei ElevenLabs vorbereitet. Tippe auf den Kreis, um abzubrechen."
+                  : realtimeMode && orbState === "hoert" ? "Ich höre zu, Master. Tippe auf den Kreis, um das Gespräch zu beenden." : undefined}
+                toggleLabel={connecting ? "Verbindungsaufbau abbrechen" : realtimeMode ? "Echtzeit-Gespräch beenden" : micActive ? "Mikrofon ausschalten" : "Mikrofon einschalten und sprechen"} />
+              {understood && <p className="cc-understood" role="status"><b>Verstanden:</b> {understood}</p>}
+            </div>
+          )}
+          <section className="cc-thread" ref={threadRef} aria-label="Gespräch mit Jarvis" tabIndex={0}
             onDragOver={(e) => { if (canAttach && e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
             onDrop={(e) => { if (!canAttach || !e.dataTransfer.files.length) return; e.preventDefault(); addFiles(e.dataTransfer.files); }}>
             {lineCount === 0 ? (
               <div className="cc-thread-empty">
-                <h2>Was soll Jarvis erledigen?</h2>
+                <h2>{stage ? "Was soll ich erledigen, Master?" : "Was soll Jarvis erledigen?"}</h2>
                 <p>{owner ? "Sprich oder schreib. Jarvis arbeitet mit seinen Agenten und fragt dich, bevor etwas nach außen geht."
                   : "Dieses Fenster ist eine Ansicht – ein anderes Fenster steuert Jarvis."}</p>
                 {owner && (
@@ -419,12 +466,25 @@ export function CommandCenter({
               </div>
             ) : (
               <>
-                {transcripts.map((t) => (
-                  <p key={t.id} className={`cc-line ${t.role} ${t.final ? "" : "pending"}`}><b>{t.role === "user" ? "Du" : "Jarvis"}</b>{t.text}</p>
-                ))}
+                {transcripts.map((t, i) => {
+                  const used = t.role === "assistant" && t.stream_id ? memoryUse[t.stream_id] : undefined;
+                  const lastOfTurn = !transcripts.slice(i + 1).some((n) => n.role === "assistant" && n.stream_id === t.stream_id);
+                  return (
+                    <div key={t.id} className="cc-turn">
+                      <p className={`cc-line ${t.role} ${t.final ? "" : "pending"}`}><b>{t.role === "user" ? "Du" : "Jarvis"}</b><span dir={rtl(t.text) ? "rtl" : "auto"}>{t.text}</span></p>
+                      {used && used.length > 0 && lastOfTurn && (
+                        <details className="cc-memory-used">
+                          <summary>{used.length === 1 ? "1 gespeicherte Erinnerung verwendet" : `${used.length} gespeicherte Erinnerungen verwendet`}</summary>
+                          <ul>{used.map((m) => <li key={m.id}>{m.inhalt}</li>)}</ul>
+                          {onOpenMemory && <button type="button" className="cc-link" onClick={onOpenMemory}>Im Gedächtnis-Center verwalten</button>}
+                        </details>
+                      )}
+                    </div>
+                  );
+                })}
                 {realtimeLines.length > 0 && <p className="cc-thread-mark">Echtzeit-Gespräch</p>}
                 {realtimeLines.map((t) => (
-                  <p key={t.id} className={`cc-line ${t.role}`}><b>{t.role === "user" ? "Du" : "Jarvis"}</b>{t.text}</p>
+                  <p key={t.id} className={`cc-line ${t.role}`}><b>{t.role === "user" ? "Du" : "Jarvis"}</b><span dir={rtl(t.text) ? "rtl" : "auto"}>{t.text}</span></p>
                 ))}
               </>
             )}
@@ -564,8 +624,8 @@ export function CommandCenter({
           </ul>
         )}
         {realtimeMode ? (
-          <button type="button" className="cc-tbtn on" onClick={() => void toggleMic()} disabled={!owner || switching}>
-            <Glyph state="hoert" /> Echtzeit beenden
+          <button type="button" className="cc-tbtn on" onClick={() => void toggleMic()} disabled={!owner}>
+            <Glyph state="hoert" /> {connecting ? "Verbinden abbrechen" : "Echtzeit beenden"}
           </button>
         ) : ptt ? (
           <button type="button" className={`cc-tbtn ${audio?.isRecording() ? "on" : ""}`} disabled={!owner}
@@ -581,8 +641,8 @@ export function CommandCenter({
         )}
         <label className="cc-tinput">
           <span className="cc-sr">Nachricht an Jarvis</span>
-          <input ref={inputRef} value={text} maxLength={8000} disabled={!owner} onChange={(e) => setText(e.target.value)}
-            placeholder={owner ? "Nachricht an Jarvis …" : "Nur Ansicht – ein anderes Fenster steuert Jarvis"}
+          <input ref={inputRef} value={text} maxLength={8000} disabled={!owner} dir="auto" onChange={(e) => setText(e.target.value)}
+            placeholder={owner ? (stage ? "Oder schreiben: Was soll ich tun, Master?" : "Nachricht an Jarvis …") : "Nur Ansicht – ein anderes Fenster steuert Jarvis"}
             onKeyDown={(e) => {
               if (e.key === "Escape") { e.stopPropagation(); (e.target as HTMLInputElement).blur(); }
             }} />

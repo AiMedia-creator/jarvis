@@ -23,3 +23,5 @@ ai-edge-litert==2.3.0
 rumps==0.4.0
 # Aus OpenJarvis uebernommen: PDF lesen
 pypdf>=5,<7
+# Netzfilter des Browser-Agenten: Zertifikat je Lauf (bisher nur indirekt über google-auth installiert)
+cryptography>=44,<51

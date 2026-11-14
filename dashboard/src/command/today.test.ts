@@ -60,3 +60,24 @@ describe("Heute: Braucht dich", () => {
     expect(full[1].text).toContain("Kundentermin");
   });
 });
+
+describe("Heute: Follow-ups aus dem CRM", () => {
+  const call = (o: Record<string, unknown>) => ({ id: "C-1", projekt_id: "crm", erstellt: 0, lead_name: "Frau Beispiel", firma: "Alpha AG", rolle: "", telefon_status: "geschaeftlich",
+    kontakt_quelle: "", ergebnis: "rueckruf", notiz: "", naechster_schritt: "Follow-up-Anruf", frist: "2026-11-10", crm_status: "nicht_noetig", dauer_s: null, auftrag_id: "", ...o });
+  const calls = (list: ReturnType<typeof call>[]) => ({ projekte: [], letzte_anrufe: list, ergebnisse: {},
+    kennzahlen: { zeitraum_tage: 7, gespraeche: list.length, nach_ergebnis: {}, termine: 0, termine_pro_100: null, crm_offen: 0, followups_faellig: 0,
+      mit_naechstem_schritt: 0, mittlere_dauer_s: null, quelle: "", stand: "" } }) as unknown as QueueInput["calls"];
+  const lead = (o: Record<string, unknown>) => ({ id: "L-1", status: "follow_up", firma: "Alpha AG", name: "Frau Beispiel", naechster_schritt: "Angebot nachfassen", followup_am: "2026-11-10", ...o }) as any;
+
+  it("führt den aktuellen Lead-Stand und zeigt erledigte Follow-ups nicht ewig als fällig", () => {
+    // Der alte Anruf (mit lead_id) hätte früher dauerhaft „überfällig“ gemeldet; der Lead ist inzwischen gebucht.
+    const erledigt = buildQueue({ ...empty, calls: calls([call({ lead_id: "L-1" })]), leads: [lead({ status: "meeting_gebucht", followup_am: "" })] });
+    expect(erledigt).toEqual([]);
+    const faellig = buildQueue({ ...empty, calls: calls([call({ lead_id: "L-1" })]), leads: [lead({}), lead({ id: "L-2", followup_am: "2026-12-01" })] });
+    expect(faellig).toHaveLength(1);
+    expect(faellig[0]).toMatchObject({ id: "lead-L-1", kind: "followup", tone: "danger", title: "Angebot nachfassen", target: "anrufe", leadId: "L-1", action: "Lead öffnen" });
+    // Diktierte Anrufe ohne Lead bleiben wie bisher sichtbar
+    expect(buildQueue({ ...empty, calls: calls([call({})]) })[0]).toMatchObject({ id: "followup-C-1", action: "Im CRM öffnen" });
+    expect(buildSuggestions({ orders: [], today: "2026-11-11", calls: calls([call({ lead_id: "L-1" })]) }).some((s) => s.label.startsWith("Follow-up"))).toBe(false);
+  });
+});

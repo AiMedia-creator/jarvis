@@ -114,7 +114,7 @@ async def test_bridge_transcribe_reports_measured_wait_and_decode(tmp_path, monk
     class TimedBridge(v3_bridge.Bridge):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
-            self.whisper_model = FakeWhisper()
+            self.whisper_models = {"base": FakeWhisper(), "small": FakeWhisper()}
 
     monkeypatch.setattr(v3_bridge, 'Bridge', TimedBridge)
     capture = io.BytesIO()
@@ -163,5 +163,50 @@ async def test_bridge_uebernimmt_routen_der_alten_oberflaeche(tmp_path, monkeypa
         events = await (await client.get(f'/internal/events?after={start}&timeout=1', headers=auth)).json()
         assert [e['typ'] for e in events['events']] == ['kamera']
         assert events['seq'] == start + 2
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_bridge_erkennt_aegyptisch_im_automatikmodus_mit_dem_genaueren_modell(tmp_path, monkeypatch):
+    """Automatisch: base erkennt die Sprache (nur de/ar); arabische Sätze schreibt small mit ägyptischem Vorgabetext."""
+    import io
+    import wave
+    monkeypatch.setenv('JARVIS_DATA_DIR', str(tmp_path))
+    monkeypatch.setenv('JARVIS_SPRACHE', 'auto')
+    aufrufe = []
+
+    class Seg:
+        def __init__(self, text):
+            self.text = text
+
+    class Fake:
+        def __init__(self, name):
+            self.name = name
+        def detect_language(self, audio):
+            return "nl", 0.5, [("nl", 0.5), ("ar", 0.3), ("de", 0.2)]
+        def transcribe(self, audio, **kwargs):
+            aufrufe.append((self.name, kwargs["language"], kwargs["beam_size"], kwargs["initial_prompt"][:5]))
+            return [Seg("فكرني أكلم فيبر")], None
+
+    class B(v3_bridge.Bridge):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.whisper_models = {"base": Fake("base"), "small": Fake("small")}
+
+    monkeypatch.setattr(v3_bridge, 'Bridge', B)
+    capture = io.BytesIO()
+    with wave.open(capture, 'wb') as wav:
+        wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(16000)
+        wav.writeframes(b'\x00\x00' * 3200)
+    client = TestClient(TestServer(v3_bridge.create_app(TOKEN, demo=False)))
+    await client.start_server()
+    try:
+        form = FormData()
+        form.add_field('file', capture.getvalue(), filename='capture.wav', content_type='audio/wav')
+        response = await client.post('/internal/transcribe', data=form, headers={'Authorization': 'Bearer ' + TOKEN})
+        body = await response.json()
+        assert response.status == 200 and body['sprache'] == 'ar' and 'فيبر' in body['text']
+        assert aufrufe == [("small", "ar", 3, "إزيك ")]  # Niederländisch wird nie gewählt
     finally:
         await client.close()

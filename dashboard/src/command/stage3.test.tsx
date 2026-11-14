@@ -94,6 +94,40 @@ describe("Umschalter Studio | Echtzeit", () => {
     act(() => root.unmount());
   });
 
+  it("lässt den Verbindungsaufbau abbrechen und behauptet dabei kein offenes Mikrofon", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const telemetry = new Telemetry();
+    telemetry.setConnected(true);
+    telemetry.realtimeState({ mode: "verbindet", toolRunning: false });
+    const stop = vi.fn(async () => undefined);
+    await act(async () => root.render(<CommandCenter {...base} telemetry={telemetry} stage voiceMode="echtzeit" onStopRealtime={stop} />));
+    expect(host.querySelector(".cc-now")!.textContent).toContain("Verbindet");
+    expect(host.querySelector(".orb-text")!.textContent).toContain("Mikrofon aus");
+    expect(host.querySelector(".orb-text")!.textContent).not.toContain("Mikrofon aktiv");
+    const cancel = [...host.querySelectorAll<HTMLButtonElement>(".cc-transport button")].find((b) => b.textContent?.includes("Verbinden abbrechen"))!;
+    expect(cancel.disabled).toBe(false);
+    await act(async () => cancel.click());
+    expect(stop).toHaveBeenCalledTimes(1);
+    // Sitzung steht: jetzt ist das Mikrofon wirklich offen.
+    await act(async () => telemetry.realtimeMode("listening"));
+    expect(host.querySelector(".orb-text")!.textContent).toContain("Mikrofon aktiv");
+    expect(host.querySelector(".cc-transport")!.textContent).toContain("Echtzeit beenden");
+    act(() => root.unmount());
+  });
+
+  it("zeigt bleibend an, warum Echtzeit nicht gestartet ist", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const start = vi.fn(async () => "Echtzeit nicht gestartet: Mikrofon ist blockiert.");
+    await act(async () => root.render(<CommandCenter {...base} settings={{ ...settings, sprachkern_verfuegbar: true }} onStartRealtime={start} />));
+    await act(async () => [...host.querySelectorAll<HTMLButtonElement>(".cc-mode button")].find((b) => b.textContent === "Echtzeit")!.click());
+    expect(host.querySelector(".cc-alert.soft")!.textContent).toContain("Mikrofon ist blockiert");
+    act(() => root.unmount());
+  });
+
   it("öffnet die Einstellungen als Dialog", async () => {
     const host = document.createElement("div");
     document.body.append(host);
@@ -113,16 +147,24 @@ describe("Umschalter Studio | Echtzeit", () => {
     const root = createRoot(host);
     const choices = [
       { key: "opus", anbieter: "anthropic", anbieter_name: "Anthropic (Claude)", modell: "claude-opus-5-5", name: "Claude Opus 5.5", verfuegbar: true, problem: null, hinweis: "" },
+      { key: "sonnet", anbieter: "anthropic", anbieter_name: "Anthropic (Claude)", modell: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", verfuegbar: true, problem: null, hinweis: "" },
       { key: "kimi", anbieter: "moonshot", anbieter_name: "Moonshot (Kimi)", modell: "kimi-k3.1-pro", name: "Kimi K3.1 Pro", verfuegbar: false, problem: "MOONSHOT_API_KEY fehlt.", hinweis: "" },
       { key: "ollama", anbieter: "ollama", anbieter_name: "Ollama (lokal)", modell: "", name: "Ollama: kein Modell gewählt", verfuegbar: false, problem: "Kein Ollama-Modell gewählt", hinweis: "" },
     ];
     await act(async () => root.render(<CommandCenter {...base} settings={{ ...settings, modell_key: "opus", modell_auswahl: choices as any, anbieter: "Anthropic (Claude)" }} />));
     await act(async () => [...host.querySelectorAll<HTMLButtonElement>(".cc-bar button")].find((b) => b.textContent === "Einstellungen")!.click());
     const buttons = [...host.querySelectorAll<HTMLButtonElement>(".cc-models button")];
-    expect(buttons.map((b) => b.querySelector("strong")!.textContent)).toEqual(["Claude Opus 5.5", "Kimi K3.1 Pro", "Ollama: kein Modell gewählt"]);
+    expect(buttons.map((b) => b.querySelector("strong")!.textContent)).toEqual(["Claude Opus 5.5", "Claude Sonnet 5.5", "Kimi K3.1 Pro", "Ollama: kein Modell gewählt"]);
     expect(buttons[0].getAttribute("aria-checked")).toBe("true");
-    expect(buttons[1].disabled).toBe(true);
-    expect(buttons[1].textContent).toContain("MOONSHOT_API_KEY fehlt.");
+    expect(buttons[2].disabled).toBe(true);
+    expect(buttons[2].textContent).toContain("MOONSHOT_API_KEY fehlt.");
+    expect([...host.querySelectorAll<HTMLOptionElement>("option")].map((o) => o.textContent)).toContain("Claude Sonnet 5.5");
+    // Backup: nur verfügbare Modelle desselben Anbieters, nicht das Hauptmodell selbst
+    const backup = host.querySelector<HTMLSelectElement>(".cc-form select:last-of-type")!;
+    const options = [...host.querySelectorAll<HTMLOptionElement>("option")].map((o) => o.textContent);
+    expect(options).toContain("Kein Backup");
+    expect(options).not.toContain("Kimi K3.1 Pro");
+    expect(backup).toBeTruthy();
     act(() => root.unmount());
   });
 });

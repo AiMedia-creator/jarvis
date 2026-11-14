@@ -19,6 +19,23 @@ VOCAB = ("Jarvis, Upwork, Lead, Leads, Lead-Score, Proposal, Pipeline, Deal, CRM
          "LinkedIn, Shopify, Klaviyo, ElevenLabs, Claude, Execute Mode, Advisor Mode, Cashflow, ROI, Retainer")
 
 
+# Unter dieser mittleren Log-Wahrscheinlichkeit rät Whisper nur noch (gemessen: klare Sprache > -0,7; Geräusche,
+# Echo-Reste und abgeschnittene Fetzen < -1,0).
+MIN_AVG_LOGPROB = -1.0
+
+
+def sprach_text(segments) -> str:
+    """Fügt erkannte Segmente zusammen und lässt geratene weg: Geräusche und Echo-Reste werden sonst zu
+    erfundenen Sätzen ("Und, ey, ey."), auf die Jarvis dann antwortet."""
+    teile = []
+    for segment in segments:
+        sicher = getattr(segment, "avg_logprob", None)
+        if sicher is not None and sicher < MIN_AVG_LOGPROB:
+            continue
+        teile.append(str(getattr(segment, "text", "")).strip())
+    return clean_transcript(" ".join(t for t in teile if t))
+
+
 def vocabulary_prompt() -> str:
     extra = str(config.get("whisper_vokabular", "") or "").strip()
     owner = str(config.get("owner_name", "") or "").strip()
@@ -46,7 +63,9 @@ class Ears:
         if self._model is None:
             from faster_whisper import WhisperModel
 
-            size = config.get("whisper_model", "small")
+            from . import sprache
+
+            size = sprache.whisper_standard()
             print(f"[ohr] lade Spracherkennung '{size}' (beim ersten Mal Download) ...")
             self._model = WhisperModel(size, device="cpu", compute_type="int8")
         return self._model
@@ -85,9 +104,14 @@ class Ears:
         return audio if len(audio) / RATE > 0.4 else None
 
     def transcribe(self, audio: np.ndarray) -> str:
-        segments, _ = self._whisper().transcribe(audio, language="de", beam_size=5, vad_filter=True,
-                                                 condition_on_previous_text=False, initial_prompt=vocabulary_prompt())
-        return clean_transcript(" ".join(s.text.strip() for s in segments))
+        from . import sprache
+        code = sprache.whisper_sprache()
+        if code is None:  # Automatisch: nur zwischen Deutsch und Arabisch wählen
+            code = sprache.waehle(self._whisper().detect_language(audio)[2])
+        segments, _ = self._whisper().transcribe(audio, language=code, beam_size=5, vad_filter=True,
+                                                 condition_on_previous_text=False,
+                                                 initial_prompt=sprache.whisper_vorgabe(vocabulary_prompt()))
+        return sprach_text(segments)
 
     def listen(self) -> str:
         audio = self.record()

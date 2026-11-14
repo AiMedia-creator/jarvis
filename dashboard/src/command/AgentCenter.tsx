@@ -15,6 +15,13 @@ export function jobState(job: Pick<AgentJob, "status" | "unterbrochen_durch_neus
   }
 }
 export const isActive = (job: Pick<AgentJob, "status">) => ["RUNNING", "PLANNED", "WAITING_FOR_APPROVAL"].includes(job.status);
+/** Gespräche sind keine Jobs. Maßgeblich ist `klasse` vom Server; ohne sie (älterer Server) entscheidet die Art.
+ *  Ausschlussliste, keine Erlaubnisliste: unbekannte Arten bleiben als Job sichtbar. */
+const CHAT_KINDS = new Set(["vordergrund", "echtzeit", "gespraech", "chat"]);
+export const isJob = (job: Pick<AgentJob, "art" | "klasse">) => job.klasse ? job.klasse !== "gespraech" : !CHAT_KINDS.has(job.art || "vordergrund");
+/** Wichtig = braucht Aufmerksamkeit oder arbeitet gerade. */
+export const isImportant = (job: Pick<AgentJob, "status" | "unterbrochen_durch_neustart">) =>
+  isActive(job) || job.status === "FAILED" || job.unterbrochen_durch_neustart;
 
 const clock = (ts: number | null | undefined) =>
   ts ? new Date(ts * 1000).toLocaleString("de-DE", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "–";
@@ -29,14 +36,21 @@ const PERMISSION: Record<string, string> = { read: "liest", lesen: "liest", loca
 const ROLE_STATE: Record<AgentRole["status"], string> = {
   bereit: "Bereit", teilweise: "Teilweise", fehlt: "Fehlt", deaktiviert: "Deaktiviert", nicht_eingerichtet: "Nicht eingerichtet",
 };
-type Filter = "aktiv" | "freigabe" | "fertig" | "problem" | "alle";
+type Filter = "wichtig" | "freigabe" | "problem" | "fertig" | "alle";
 const FILTERS: { id: Filter; label: string; test: (j: AgentJob) => boolean }[] = [
-  { id: "aktiv", label: "Aktiv", test: (j) => j.status === "RUNNING" || j.status === "PLANNED" },
+  { id: "wichtig", label: "Wichtig", test: isImportant },
   { id: "freigabe", label: "Benötigt Freigabe", test: (j) => j.status === "WAITING_FOR_APPROVAL" },
+  { id: "problem", label: "Fehlgeschlagen", test: (j) => j.status === "FAILED" || j.unterbrochen_durch_neustart },
   { id: "fertig", label: "Abgeschlossen", test: (j) => j.status === "COMPLETED" },
-  { id: "problem", label: "Fehlgeschlagen / abgebrochen", test: (j) => j.status === "FAILED" || j.status === "CANCELLED" },
-  { id: "alle", label: "Alle", test: () => true },
+  { id: "alle", label: "Alle Jobs", test: () => true },
 ];
+/** Die eine nächste Aktion je Zeile (null = nur ansehen). */
+function nextAction(job: AgentJob): { label: string; kind: "freigabe" | "wiederholen" | "abbrechen" } | null {
+  if (job.status === "WAITING_FOR_APPROVAL") return { label: "Freigabe prüfen", kind: "freigabe" };
+  if ((job.status === "FAILED" || job.unterbrochen_durch_neustart) && job.wiederholbar) return { label: "Erneut starten", kind: "wiederholen" };
+  if ((job.status === "RUNNING" || job.status === "PLANNED") && job.abbrechbar) return { label: "Abbrechen", kind: "abbrechen" };
+  return null;
+}
 
 /** Laufzeit zählt nur bei laufenden Jobs weiter (eine Sekunde Takt, kein erfundener Fortschritt). */
 function useNow(active: boolean): number {
@@ -51,7 +65,7 @@ function useNow(active: boolean): number {
 
 function Steps({ job }: { job: AgentJob }) {
   if (job.schritte.length === 0)
-    return <p className="cc-empty">Keine Werkzeug-Schritte – der Agent hat direkt geantwortet{job.art === "echtzeit" ? " (Echtzeit-Gespräch; Schritte entstehen nur bei Werkzeugaufrufen)" : ""}.</p>;
+    return <p className="cc-empty">Keine Werkzeug-Schritte – direkt beantwortet.</p>;
   return (
     <ol className="ac-steps">
       {job.schritte.map((s) => (
@@ -78,11 +92,11 @@ function JobDetail({ job, canAct, busy, onCancel, onRetry, onApprovals, onOpenOr
   const now = useNow(isActive(job));
   const state = jobState(job);
   const orderId = /\bA-[0-9a-f]{6,}\b/.exec(job.ergebnis ?? "")?.[0];
-  const next = job.status === "WAITING_FOR_APPROVAL" ? "Eine Vorlage wartet auf deine Entscheidung. Erst danach wird außerhalb von Jarvis etwas geändert."
-    : job.unterbrochen_durch_neustart ? "Jarvis wurde während der Ausführung beendet. Der Job läuft nicht von selbst weiter – prüfe das Ergebnis im Zielsystem, bevor du neu beauftragst."
-    : job.status === "FAILED" ? (job.wiederholbar ? "Du kannst den Lauf mit denselben Eingaben neu starten." : "Bitte neu beauftragen – für diesen Job sind keine Eingaben zur Wiederholung gespeichert.")
-    : job.status === "CANCELLED" ? "Abgebrochen. Bereits ausgeführte Schritte bleiben bestehen; nichts wird doppelt ausgeführt."
-    : job.status === "RUNNING" ? (job.fortschritt || "Der Agent arbeitet. Schritte erscheinen hier, sobald er Werkzeuge nutzt.") : "";
+  const next: [string, string] | null = job.status === "WAITING_FOR_APPROVAL" ? ["Vorlage wartet auf deine Entscheidung.", "Erst danach wird außerhalb von Jarvis etwas geändert."]
+    : job.unterbrochen_durch_neustart ? ["Läuft nicht von selbst weiter. Ergebnis im Zielsystem prüfen, dann neu beauftragen.", "Jarvis wurde während der Ausführung beendet."]
+    : job.status === "FAILED" ? (job.wiederholbar ? ["Mit denselben Eingaben neu starten.", ""] : ["Bitte neu beauftragen.", "Für diesen Job sind keine Eingaben zur Wiederholung gespeichert."])
+    : job.status === "CANCELLED" ? ["Abgebrochen. Nichts wird doppelt ausgeführt.", "Bereits ausgeführte Schritte bleiben bestehen."]
+    : job.status === "RUNNING" ? [job.fortschritt || "Der Agent arbeitet.", ""] : null;
   return (
     <aside className="cc-detail ac-detail" aria-label="Job-Details">
       <div className="ac-detail-head">
@@ -94,17 +108,20 @@ function JobDetail({ job, canAct, busy, onCancel, onRetry, onApprovals, onOpenOr
         {job.unteragenten.length > 0 && <><dt>Hinzugezogen</dt><dd>{job.unteragenten.join(", ")}</dd></>}
         {job.faehigkeit && <><dt>Fähigkeit</dt><dd><span className="cc-mono">{job.faehigkeit}</span></dd></>}
         <dt>Gestartet</dt><dd>{clock(job.start)}</dd>
-        <dt>Letzte Aktivität</dt><dd>{clock(job.letzte_aktivitaet)}</dd>
         <dt>Laufzeit</dt><dd>{duration((job.ende ?? now) - job.start)}{isActive(job) && job.status !== "WAITING_FOR_APPROVAL" ? " (läuft)" : ""}</dd>
         <dt>Fortschritt</dt><dd>{job.schritte_gesamt === 0 ? "keine Werkzeug-Schritte" : `${job.schritte_fertig} von ${job.schritte_gesamt} Schritten beendet`}</dd>
-        {job.werkzeuge.length > 0 && <><dt>Werkzeuge</dt><dd>{job.werkzeuge.map((w) => <span key={w} className="cc-mono ac-tool">{w}</span>)}</dd></>}
-        {job.modell && <><dt>Modell</dt><dd><span className="cc-mono">{job.modell}</span></dd></>}
-        <dt>Nutzung</dt><dd>{job.nutzung
-          ? <>{Object.values(job.nutzung.tokens).reduce((a, b) => a + b, 0).toLocaleString("de-DE")} Tokens{job.nutzung.kosten_usd != null ? ` · ${job.nutzung.kosten_usd.toFixed(4)} USD` : " · Kosten nicht erfasst (keine Preise konfiguriert)"}</>
-          : "nicht erfasst"}</dd>
-        {job.repo && <><dt>Repository</dt><dd>{job.repo.name} <span className="cc-mono">{job.repo.commit.slice(0, 10)}</span></dd></>}
       </dl>
-      {next && <p className="ac-next"><strong>Nächster Schritt:</strong> {next}</p>}
+      <details className="crm-more"><summary>Technik: Werkzeuge, Modell, Nutzung</summary>
+        <dl>
+          <dt>Letzte Aktivität</dt><dd>{clock(job.letzte_aktivitaet)}</dd>
+          {job.werkzeuge.length > 0 && <><dt>Werkzeuge</dt><dd>{job.werkzeuge.map((w) => <span key={w} className="cc-mono ac-tool">{w}</span>)}</dd></>}
+          {job.modell && <><dt>Modell</dt><dd><span className="cc-mono">{job.modell}</span></dd></>}
+          <dt>Nutzung</dt><dd>{job.nutzung
+            ? <>{Object.values(job.nutzung.tokens).reduce((a, b) => a + b, 0).toLocaleString("de-DE")} Tokens{job.nutzung.kosten_usd != null ? ` · ${job.nutzung.kosten_usd.toFixed(4)} USD` : " · Kosten nicht erfasst"}</>
+            : "nicht erfasst"}</dd>
+          {job.repo && <><dt>Repository</dt><dd>{job.repo.name} <span className="cc-mono">{job.repo.commit.slice(0, 10)}</span></dd></>}
+        </dl></details>
+      {next && <p className="ac-next" title={next[1] || undefined}><strong>Nächster Schritt:</strong> {next[0]}</p>}
       {job.fehler && !job.unterbrochen_durch_neustart && <p className="ac-err"><strong>Fehlergrund:</strong> {job.fehler}</p>}
       {job.ergebnis && <div className="ac-result"><h4>Ergebnis</h4><p>{job.ergebnis}</p></div>}
       <div><h4>Schritte</h4><Steps job={job} /></div>
@@ -122,6 +139,7 @@ function RoleCard({ role, canAct, onStart, onOpenJob }: {
   role: AgentRole; canAct: boolean; onStart: (role: AgentRole, task: string) => Promise<void>; onOpenJob: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [more, setMore] = useState(false);
   const [task, setTask] = useState(role.vorlage);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -132,30 +150,45 @@ function RoleCard({ role, canAct, onStart, onOpenJob }: {
     catch (e) { setError(e instanceof Error ? e.message : "Start fehlgeschlagen."); }
     finally { setBusy(false); }
   };
+  const tone = role.status === "bereit" ? "bereit" : role.status === "teilweise" ? "RUNNING" : "nicht_eingerichtet";
   return (
-    <article className="cc-card-box cc-agent ac-role">
-      <div className="head"><strong>{role.name}</strong><span className={`cc-state ${role.status === "bereit" ? "bereit" : role.status === "teilweise" ? "RUNNING" : "nicht_eingerichtet"}`}>{ROLE_STATE[role.status]}</span></div>
-      <p>{role.aufgabe}</p>
-      <p className="ac-impl">{role.umsetzung}{role.grund ? ` · ${role.grund}` : ""}</p>
-      <p className="ac-impl">{role.jobs_aktiv > 0 ? `${role.jobs_aktiv} Job${role.jobs_aktiv === 1 ? "" : "s"} aktiv` : "Kein aktiver Job"}
-        {role.letzter_job && <> · zuletzt <button type="button" className="cc-link" onClick={() => onOpenJob(role.letzter_job!.id)}>{clock(role.letzter_job.start)}</button></>}</p>
-      {open ? (
+    <li className={`ac-role ${role.jobs_aktiv > 0 ? "busy" : ""}`}>
+      <div className="ac-role-row">
+        <button type="button" className="ac-role-name" aria-expanded={more} onClick={() => setMore((v) => !v)} title="Aufgabe und Umsetzung zeigen">
+          <strong>{role.name}</strong></button>
+        <span className={`cc-state ${tone}`}>{ROLE_STATE[role.status]}</span>
+        <span className="ac-role-load">{role.jobs_aktiv > 0
+          ? <span className="ac-live"><i className="ac-dot RUNNING" aria-hidden="true" />{role.jobs_aktiv} aktiv</span>
+          : role.letzter_job ? <button type="button" className="cc-link" onClick={() => onOpenJob(role.letzter_job!.id)} aria-label={`Letzter Job von ${role.name} öffnen`}>zuletzt {clock(role.letzter_job.start)}</button>
+          : <span className="ac-idle">frei</span>}</span>
+        {role.startbar && canAct && !open
+          ? <button type="button" className="cc-btn small" onClick={() => setOpen(true)} aria-label={`Auftrag starten: ${role.name}`}>Auftrag starten</button>
+          : <span className="ac-role-none" aria-hidden="true" />}
+      </div>
+      {more && <p className="ac-impl">{role.aufgabe} <span className="ac-how">{role.umsetzung}{role.grund ? ` · ${role.grund}` : ""}</span></p>}
+      {!more && role.grund && role.status !== "bereit" && <p className="ac-impl">{role.grund}</p>}
+      {open && (
         <div className="ac-start">
-          <label htmlFor={`task-${role.id}`}>Auftrag für diese Rolle</label>
+          <label htmlFor={`task-${role.id}`}>Auftrag für {role.name}</label>
           <textarea id={`task-${role.id}`} rows={3} value={task} onChange={(e) => setTask(e.target.value)} maxLength={1500} autoFocus />
-          {error && <p className="ac-err">{error}</p>}
+          {error && <p className="ac-err" role="alert">{error}</p>}
           <div className="cc-actions">
             <button type="button" className="cc-btn small accent" disabled={busy} onClick={() => void submit()}>{busy ? "Startet …" : "Als Job starten"}</button>
             <button type="button" className="cc-btn small" onClick={() => setOpen(false)}>Abbrechen</button>
+            <span className="cc-hint" title="Läuft als eigener Job mit dem Werkzeug-Rahmen der Skill.">Außenwirksames landet in „Freigaben“.</span>
           </div>
-          <p className="cc-hint">Läuft als eigener Job mit dem Werkzeug-Rahmen der Skill. Außenwirksames landet als Vorlage in „Freigaben“.</p>
         </div>
-      ) : role.startbar && canAct ? (
-        <div><button type="button" className="cc-btn small" onClick={() => setOpen(true)}>Auftrag starten</button></div>
-      ) : null}
-    </article>
+      )}
+    </li>
   );
 }
+
+/** Wichtige Jobs in der Reihenfolge, in der sie dich betreffen. */
+const GROUPS: { id: string; label: string; test: (j: AgentJob) => boolean }[] = [
+  { id: "du", label: "Braucht dich", test: (j) => j.status === "WAITING_FOR_APPROVAL" || j.status === "FAILED" || j.unterbrochen_durch_neustart },
+  { id: "laeuft", label: "Läuft", test: (j) => j.status === "RUNNING" },
+  { id: "geplant", label: "Geplant", test: (j) => j.status === "PLANNED" },
+];
 
 /** Agenten-Center: echte Jobs links, Details rechts, darunter die Rollen und womit sie tatsächlich umgesetzt sind. */
 export function AgentCenter({ data, error, canAct, focusJob, busyId, onCancel, onRetry, onApprovals, onOpenOrder, onStartRole, onRefresh }: {
@@ -163,9 +196,11 @@ export function AgentCenter({ data, error, canAct, focusJob, busyId, onCancel, o
   onCancel: (id: string) => void; onRetry: (id: string) => void; onApprovals: () => void; onOpenOrder: (id: string) => void;
   onStartRole: (role: AgentRole, task: string) => Promise<void>; onRefresh: () => void;
 }) {
-  const jobs = data?.jobs ?? [];
+  // Jobs, keine Gespräche: Chat- und Echtzeit-Züge stehen im Gesprächsarchiv (Gedächtnis), nicht hier.
+  const jobs = useMemo(() => (data?.jobs ?? []).filter(isJob), [data]);
+  const chats = (data?.jobs.length ?? 0) - jobs.length;
   const anyActive = jobs.some(isActive);
-  const [filter, setFilter] = useState<Filter>(anyActive ? "aktiv" : "alle");
+  const [filter, setFilter] = useState<Filter>("wichtig");
   const [selectedId, setSelectedId] = useState<string | null>(focusJob);
   const [showAll, setShowAll] = useState(false);
   useEffect(() => { if (focusJob) { setSelectedId(focusJob); setFilter("alle"); } }, [focusJob]);
@@ -174,6 +209,33 @@ export function AgentCenter({ data, error, canAct, focusJob, busyId, onCancel, o
   const selected = jobs.find((j) => j.id === selectedId) ?? null;
   if (!data) return <p className="cc-empty">{error ?? "Lädt …"}</p>;
   const count = (f: Filter) => jobs.filter(FILTERS.find((x) => x.id === f)!.test).length;
+  const visible = showAll ? shown : shown.slice(0, 8);
+  // „Wichtig“ ist gruppiert (Braucht dich, Läuft, Geplant); die übrigen Ansichten sind eine einfache Liste.
+  const groups = filter === "wichtig"
+    ? GROUPS.map((g) => ({ ...g, jobs: visible.filter(g.test) })).filter((g) => g.jobs.length > 0)
+    : [{ id: "alle", label: "", jobs: visible, test: () => true }];
+  const row = (j: AgentJob) => {
+    const st = jobState(j);
+    const action = canAct || j.status === "WAITING_FOR_APPROVAL" ? nextAction(j) : null;
+    return (
+      <li key={j.id} className={`ac-job-row ${st.key}`}>
+        <button type="button" className={`cc-row ac-job ${selectedId === j.id ? "selected" : ""}`} aria-pressed={selectedId === j.id}
+          onClick={() => setSelectedId(selectedId === j.id ? null : j.id)}>
+          <span className={`cc-state ${st.key}`}>{st.label}</span>
+          <span className="grow"><span className="title">{j.titel}</span>
+            <span className="meta"><span className="ac-who">{j.agent.name}</span> · {clock(j.start)} · {duration((j.ende ?? now) - j.start)}
+              {j.schritte_gesamt > 0 && ` · ${j.schritte_fertig}/${j.schritte_gesamt} Schritte`}
+              {j.fehler && !j.unterbrochen_durch_neustart ? ` · ${j.fehler.length > 70 ? j.fehler.slice(0, 70) + " …" : j.fehler}` : ""}</span></span>
+        </button>
+        {action ? (
+          <button type="button" className={`cc-btn small ${action.kind === "freigabe" ? "brand" : ""}`} disabled={busyId === j.id}
+            aria-label={`${action.label}: ${j.titel}`}
+            onClick={() => action.kind === "freigabe" ? onApprovals() : action.kind === "wiederholen" ? onRetry(j.id) : onCancel(j.id)}>{action.label}</button>
+        ) : <span className="ac-none">{isActive(j) ? "läuft selbst" : "nur ansehen"}</span>}
+      </li>
+    );
+  };
+  const busyRoles = data.rollen.filter((r) => r.jobs_aktiv > 0).length;
   return (
     <div className="ac">
       <div className="ac-summary" role="group" aria-label="Jobs nach Status">
@@ -185,52 +247,52 @@ export function AgentCenter({ data, error, canAct, focusJob, busyId, onCancel, o
       </div>
       <div className={`ac-body ${selected ? "with-detail" : ""}`}>
         <section className="cc-card-box" aria-label="Jobs">
-          <header><h3>Jobs</h3><button type="button" className="cc-link" onClick={onRefresh}>Aktualisieren</button></header>
+          <header><h3>{FILTERS.find((f) => f.id === filter)!.label}</h3><button type="button" className="cc-link" onClick={onRefresh}>Aktualisieren</button></header>
           {shown.length === 0 ? (
-            <p className="cc-empty">{jobs.length === 0 ? "Noch kein Job. Sobald du Jarvis etwas aufträgst oder unten eine Rolle startest, erscheint die Arbeit hier – mit echten Schritten."
-              : filter === "aktiv" ? "Gerade läuft nichts. Kein Agent ist aktiv." : "Keine Jobs in dieser Ansicht."}</p>
+            <p className="cc-empty">{jobs.length === 0 ? "Noch kein Job." : filter === "wichtig" ? "Nichts Wichtiges offen." : "Keine Jobs in dieser Ansicht."}</p>
           ) : (
-            <ul className="cc-list">
-              {(showAll ? shown : shown.slice(0, 8)).map((j) => {
-                const st = jobState(j);
-                return (
-                  <li key={j.id}>
-                    <button type="button" className={`cc-row ac-job ${selectedId === j.id ? "selected" : ""}`} aria-pressed={selectedId === j.id}
-                      onClick={() => setSelectedId(selectedId === j.id ? null : j.id)}>
-                      <span className={`ac-dot ${st.key}`} aria-hidden="true" />
-                      <span className="grow"><span className="title">{j.titel}</span>
-                        <span className="meta">{j.agent.name} · {clock(j.start)} · {duration((j.ende ?? now) - j.start)}
-                          {j.schritte_gesamt > 0 && ` · ${j.schritte_fertig}/${j.schritte_gesamt} Schritte`}
-                          {j.fehler && !j.unterbrochen_durch_neustart ? ` · ${j.fehler.length > 70 ? j.fehler.slice(0, 70) + " …" : j.fehler}` : ""}</span></span>
-                      <span className={`cc-state ${st.key}`}>{st.label}</span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
+            <>
+              <div className="ac-cols" aria-hidden="true"><span>Status</span><span>Job · Rolle</span><span>Nächste Aktion</span></div>
+              {groups.map((g) => (
+                <div key={g.id} className={`ac-group ${g.id}`}>
+                  {g.label && <h4><span>{g.label}</span><span className="mono">{g.jobs.length}</span></h4>}
+                  <ul className="cc-list ac-jobs" aria-label={g.label || undefined}>{g.jobs.map(row)}</ul>
+                </div>
+              ))}
+            </>
           )}
           {shown.length > 8 && <button type="button" className="cc-link" onClick={() => setShowAll(!showAll)}>{showAll ? "Weniger anzeigen" : `Alle ${shown.length} anzeigen`}</button>}
-          <p className="cc-hint">{data.hinweis}</p>
+          {chats > 0 && <p className="cc-hint" title={data.hinweis}>{chats} Gesprächszüge sind hier ausgeblendet – sie stehen im Gesprächsarchiv unter „Gedächtnis“.</p>}
         </section>
         {selected && (
           <JobDetail job={selected} canAct={canAct} busy={busyId === selected.id} onCancel={onCancel} onRetry={onRetry}
             onApprovals={onApprovals} onOpenOrder={onOpenOrder} onClose={() => setSelectedId(null)} />
         )}
       </div>
-      <div className="cc-page-head ac-roles-head"><div><h2>Rollen</h2>
-        <p>Was Jarvis abdeckt und womit. Eine Rolle ist der Orchestrator plus Skill und Werkzeug-Rahmen – kein eigener Dauerläufer. „Aktiv“ ist nur, wofür wirklich ein Job läuft.</p></div></div>
-      <div className="cc-grid">
-        {data.rollen.map((r) => <RoleCard key={r.id} role={r} canAct={canAct} onStart={onStartRole} onOpenJob={(id) => { setSelectedId(id); setFilter("alle"); }} />)}
-      </div>
-      <div className="cc-page-head ac-roles-head"><div><h2>Modelle und Kerne</h2><p>Die KI-Bausteine hinter den Rollen, mit Einrichtungsstatus.</p></div></div>
-      <div className="cc-grid">
-        {data.agenten.map((a) => (
-          <article key={a.id} className="cc-card-box cc-agent">
-            <div className="head"><strong>{a.name}</strong><span className={`cc-state ${a.status}`}>{a.status === "bereit" ? "Bereit" : a.status === "fehler" ? "Fehler" : "Nicht eingerichtet"}</span></div>
-            <p>{a.rolle}</p><div><span className="cc-mono">{a.modell}</span></div>{a.hinweis && <p>{a.hinweis}</p>}
-          </article>
-        ))}
-      </div>
+      {data.rollen.length > 0 && (
+        <section className="ac-roles" aria-label="Rollen">
+          <header><h3>Rollen</h3><span className="cc-tag" title="Eine Rolle ist der Orchestrator plus Skill und Werkzeug-Rahmen, kein eigener Dauerläufer. Aktiv ist nur, wofür wirklich ein Job läuft.">
+            {busyRoles} von {data.rollen.length} aktiv</span></header>
+          <div className="ac-cols roles" aria-hidden="true"><span>Rolle</span><span>Einrichtung</span><span>Auslastung</span><span>Nächste Aktion</span></div>
+          <ul className="ac-role-list">
+            {data.rollen.map((r) => <RoleCard key={r.id} role={r} canAct={canAct} onStart={onStartRole} onOpenJob={(id) => { setSelectedId(id); setFilter("alle"); }} />)}
+          </ul>
+        </section>
+      )}
+      {data.agenten.length > 0 && (
+        <details className="ac-cores">
+          <summary><h3>Modelle und Kerne</h3><span className="cc-tag">{data.agenten.filter((a) => a.status === "bereit").length} von {data.agenten.length} bereit</span></summary>
+          <ul className="ac-role-list">
+            {data.agenten.map((a) => (
+              <li key={a.id} className="ac-role"><div className="ac-role-row cores">
+                <strong>{a.name}</strong>
+                <span className={`cc-state ${a.status}`}>{a.status === "bereit" ? "Bereit" : a.status === "fehler" ? "Fehler" : "Nicht eingerichtet"}</span>
+                <span className="cc-mono">{a.modell}</span></div>
+                <p className="ac-impl">{a.rolle}{a.hinweis ? ` · ${a.hinweis}` : ""}</p></li>
+            ))}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }

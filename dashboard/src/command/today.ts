@@ -1,5 +1,5 @@
 /** „Heute“: eine einzige, fest priorisierte Liste dessen, was den Nutzer braucht – nur aus vorhandenen Daten. */
-import type { AgentCenterData, Approval, Automations, CalendarData, CallOverview, Connections, ContentOverview, Order } from "./api";
+import type { AgentCenterData, Approval, Automations, CalendarData, CallOverview, Connections, ContentOverview, Order, Lead } from "./api";
 import { remaining } from "./model";
 
 export type QueueKind = "freigabe" | "job" | "auftrag" | "followup" | "crm" | "content" | "kalender" | "ablauf" | "verbindung";
@@ -16,12 +16,15 @@ export type QueueItem = {
   target: QueueTarget;
   orderId?: string;
   jobId?: string;
+  leadId?: string;
 };
 export type QueueInput = {
   approvals: Approval[];
   orders: Order[];
   today: string;
   calls: CallOverview | null;
+  /** Leads mit Status „Follow-up“ (CRM). null = nicht geladen. */
+  leads?: Lead[] | null;
   content: ContentOverview | null;
   calendar: CalendarData | null;
   automations: Automations | null;
@@ -78,15 +81,26 @@ export function buildQueue(input: QueueInput): QueueItem[] {
       action: "Auftrag öffnen", target: "auftraege", orderId: o.id,
     });
 
+  // Follow-ups aus dem CRM führt der Lead (er kennt den aktuellen Stand); diktierte Anrufe ohne Lead bleiben wie bisher.
+  const dueLeads = (input.leads ?? [])
+    .filter((l) => l.status === "follow_up" && l.followup_am && l.followup_am <= input.today)
+    .sort((a, b) => a.followup_am.localeCompare(b.followup_am));
+  for (const l of dueLeads)
+    items.push({
+      id: `lead-${l.id}`, kind: "followup", tone: l.followup_am < input.today ? "danger" : "attn", label: "Follow-up",
+      title: l.naechster_schritt || "Follow-up-Anruf",
+      reason: `${[l.firma, l.name].filter(Boolean).join(" · ") || "Lead ohne Namen"} · ${l.followup_am < input.today ? `überfällig seit ${l.followup_am}` : "heute fällig"}`,
+      action: "Lead öffnen", target: "anrufe", leadId: l.id,
+    });
   const due = (input.calls?.letzte_anrufe ?? [])
-    .filter((c) => c.naechster_schritt && c.frist && c.frist <= input.today)
+    .filter((c) => !c.lead_id && c.naechster_schritt && c.frist && c.frist <= input.today)
     .sort((a, b) => a.frist.localeCompare(b.frist));
   for (const c of due)
     items.push({
       id: `followup-${c.id}`, kind: "followup", tone: c.frist < input.today ? "danger" : "attn", label: "Follow-up",
       title: c.naechster_schritt,
       reason: `${c.firma || c.lead_name || "Kontakt ohne Namen"} · ${c.frist < input.today ? `überfällig seit ${c.frist}` : "heute fällig"}`,
-      action: "Im Vertrieb öffnen", target: "anrufe",
+      action: "Im CRM öffnen", target: "anrufe",
     });
 
   for (const e of (input.content?.eintraege ?? []).filter((x) => x.status === "review"))
@@ -144,7 +158,7 @@ export function buildSuggestions(input: Pick<QueueInput, "orders" | "today" | "c
   const overdue = input.orders.filter((o) => o.status !== "erledigt" && o.frist && o.frist <= input.today).sort(byPriority)[0];
   if (overdue)
     out.push({ label: `Nächster Schritt: ${overdue.titel}`, text: `Wie gehe ich den Auftrag "${overdue.titel}" am besten an? Nächster Schritt?` });
-  const call = (input.calls?.letzte_anrufe ?? []).find((c) => c.naechster_schritt && c.frist && c.frist <= input.today);
+  const call = (input.calls?.letzte_anrufe ?? []).find((c) => !c.lead_id && c.naechster_schritt && c.frist && c.frist <= input.today);
   if (call)
     out.push({ label: `Follow-up entwerfen: ${call.firma || call.lead_name}`, text: `Entwirf das Follow-up für ${call.firma || call.lead_name} als Vorlage: ${call.naechster_schritt}` });
   out.push({ label: "Auftrag anlegen", text: "Lege einen Auftrag an: " });

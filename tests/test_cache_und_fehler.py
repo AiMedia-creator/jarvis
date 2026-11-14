@@ -67,37 +67,29 @@ def test_ohne_cache_bleibt_systemprompt_text():
 
 
 def test_gedaechtnis_nur_neues_und_verlauf_unveraendert(tmp_path):
-    from jarvis import config
-
-    mem = config.data_dir() / "memories"
-    mem.mkdir(exist_ok=True)
-    (mem / "kunden.md").write_text("Erika Beispiel ist Stammkundin.", encoding="utf-8")
     a = A.Agent(channel="web", conversation_id="gedaechtnis-test")
+    fact = a.memory_store.remember("Erika Beispiel ist Stammkundin.", "note", "user")
     a._append_user_turn("Wer ist Stammkundin?")
     first_turn = a.messages[-1]["content"]
     assert "<gedaechtnis>" in first_turn and "Erika Beispiel" in first_turn
     a.messages.append({"role": "assistant", "content": "Erika."})
-    a._append_user_turn("Und sonst?")
+    a._append_user_turn("Und Stammkundin sonst?")
     assert a.messages[0]["content"] == first_turn  # früherer Zug nie verändert
     assert "Erika Beispiel" not in a.messages[-1]["content"]  # nichts doppelt
-    # Datei geändert -> der neue Stand kommt einmal mit
-    (mem / "kunden.md").write_text("Erika Beispiel ist Stammkundin seit 2024.", encoding="utf-8")
+    # Erinnerung korrigiert -> die neue Fassung kommt einmal mit
+    a.memory_store.update_fact(fact["id"], "Erika Beispiel ist Stammkundin seit 2024.")
     a.messages.append({"role": "assistant", "content": "Nichts weiter."})
     a._append_user_turn("Was weißt du über Erika?")
     assert "seit 2024" in a.messages[-1]["content"]
 
 
 def test_nach_kuerzung_kommt_gedaechtnis_wieder(tmp_path):
-    from jarvis import config
-
-    mem = config.data_dir() / "memories"
-    mem.mkdir(exist_ok=True)
-    (mem / "regeln.md").write_text("Rechnungen immer als PDF.", encoding="utf-8")
     a = A.Agent(channel="web", conversation_id="kuerzung-test")
-    a._append_user_turn("Erste Frage")
+    a.memory_store.remember("Rechnungen immer als PDF.", "note", "user")
+    a._append_user_turn("Wie verschicke ich Rechnungen?")
     a.messages.clear()
     a._compacted = True
-    a._append_user_turn("Zweite Frage")
+    a._append_user_turn("Und Rechnungen an Weber?")
     assert "Rechnungen immer als PDF." in a.messages[-1]["content"]
 
 

@@ -57,7 +57,8 @@ function FactRow({ fact, all, canEdit, onChanged }: { fact: MemoryFactFull; all:
         <span>Quelle: {SOURCE[fact.source] ?? fact.source}{fact.client ? ` (${fact.client})` : ""}</span>
         <span>erfasst {when(fact.created_at)}</span>
         {fact.updated_at !== fact.created_at && <span>geändert {when(fact.updated_at)}</span>}
-        {fact.confirmed_at ? <span className="mc-ok">von dir bestätigt {when(fact.confirmed_at)}</span> : <span className="mc-open">unbestätigt</span>}
+        {fact.consent === "vorschlag" ? <span className="mc-open">Vorschlag – wird erst nach deiner Bestätigung verwendet</span>
+          : fact.confirmed_at ? <span className="mc-ok">von dir bestätigt {when(fact.confirmed_at)}</span> : <span className="mc-ok">aktiv</span>}
         {fact.valid_until && <span>{fact.gueltig ? `gültig bis ${when(fact.valid_until)}` : `abgelaufen seit ${when(fact.valid_until)}`}</span>}
         {fact.versionen > 0 && <span>{fact.versionen} frühere Fassung{fact.versionen === 1 ? "" : "en"}</span>}
       </div>
@@ -68,7 +69,7 @@ function FactRow({ fact, all, canEdit, onChanged }: { fact: MemoryFactFull; all:
       {error && <p className="ac-err">{error}</p>}
       {mode === "delete" && (
         <div className="mc-confirm" role="alertdialog" aria-label="Löschen bestätigen">
-          <p>Endgültig löschen? Erinnerung, frühere Fassungen und Suchindex-Eintrag werden entfernt. Gespräche im Archiv, in denen der Inhalt vorkam, bleiben, bis du sie dort löschst.</p>
+          <p>Endgültig löschen? Erinnerung, frühere Fassungen und Suchindex-Eintrag werden entfernt. Gespräche im Archiv bleiben.</p>
           <div className="cc-actions">
             <button type="button" className="cc-btn small mc-danger" disabled={busy} onClick={() => void run(() => api.memoryAction("loeschen", { id: fact.id }), "Gelöscht – auch Versionen und Suchindex.")}>Endgültig löschen</button>
             <button type="button" className="cc-btn small" onClick={() => setMode("view")}>Behalten</button>
@@ -77,14 +78,14 @@ function FactRow({ fact, all, canEdit, onChanged }: { fact: MemoryFactFull; all:
       )}
       {mode === "history" && (
         <div className="mc-history">
-          {!history ? <p className="cc-empty">Verlauf lädt …</p> : history.versionen.length === 0 ? <p className="cc-empty">Keine früheren Fassungen – diese Erinnerung wurde nie geändert.</p> : (
+          {!history ? <p className="cc-empty">Verlauf lädt …</p> : history.versionen.length === 0 ? <p className="cc-empty">Keine früheren Fassungen.</p> : (
             <ol>{history.versionen.map((v, i) => <li key={i}><span className="mc-date">bis {when(v.changed_at)} · {v.reason}</span>{v.content}</li>)}</ol>
           )}
         </div>
       )}
       {canEdit && mode !== "edit" && mode !== "delete" && (
         <div className="cc-actions">
-          {!fact.confirmed_at && <button type="button" className="cc-btn small" disabled={busy} onClick={() => void run(() => api.memoryAction("bestaetigen", { id: fact.id }), "Bestätigt.")}>Bestätigen</button>}
+          {fact.consent === "vorschlag" && <button type="button" className="cc-btn small accent" disabled={busy} onClick={() => void run(() => api.memoryAction("bestaetigen", { id: fact.id }), "Bestätigt – Jarvis verwendet diese Erinnerung jetzt, wenn sie zur Frage passt.")}>Bestätigen</button>}
           <button type="button" className="cc-btn small" onClick={() => setMode("edit")}>Korrigieren</button>
           <button type="button" className="cc-btn small" aria-expanded={mode === "history"} onClick={() => void showHistory()}>Verlauf</button>
           <button type="button" className="cc-btn small" onClick={() => setMode("delete")}>Löschen</button>
@@ -175,6 +176,16 @@ export function MemoryCenter({ canEdit }: { canEdit: boolean }) {
     } catch (e) { setNote(e instanceof Error ? e.message : "Export fehlgeschlagen."); }
     finally { setBusy(false); }
   };
+  const [wipe, setWipe] = useState(false);
+  const wipeAll = async () => {
+    setBusy(true);
+    try {
+      const r = await api.memoryAction("alle_loeschen", { bestaetigt: true });
+      setNote(`Alle ${r.geloescht} Erinnerungen gelöscht. Chatverlauf und Dateianhänge sind davon nicht betroffen.`);
+      setWipe(false); void load(query.trim());
+    } catch (e) { setNote(e instanceof Error ? e.message : "Nicht gelöscht."); }
+    finally { setBusy(false); }
+  };
   const reindex = async () => {
     setBusy(true);
     try { const r = await api.memoryAction("index_neu"); setNote(`Suchindex neu aufgebaut aus ${r.wissen} Erinnerungen und ${r.archiv} Gesprächszügen.`); }
@@ -203,7 +214,21 @@ export function MemoryCenter({ canEdit }: { canEdit: boolean }) {
         </div>
         <button type="button" className="cc-btn small" disabled={busy} onClick={() => void exportAll()}>Exportieren</button>
         {canEdit && <button type="button" className="cc-btn small" disabled={busy} onClick={() => void reindex()}>Suchindex neu aufbauen</button>}
+        {canEdit && z.facts > 0 && <button type="button" className="cc-btn small" disabled={busy} aria-expanded={wipe} onClick={() => setWipe(true)}>Alle Erinnerungen löschen</button>}
       </div>
+      {wipe && (
+        <div className="mc-confirm" role="alertdialog" aria-label="Alle Erinnerungen löschen">
+          <p>Alle {z.facts} Erinnerungen endgültig löschen – samt früherer Fassungen? Das lässt sich nicht rückgängig machen.
+            Der Chatverlauf (Gesprächsarchiv) und Dateianhänge bleiben.</p>
+          <div className="cc-actions">
+            <button type="button" className="cc-btn small mc-danger" disabled={busy} onClick={() => void wipeAll()}>Ja, alle endgültig löschen</button>
+            <button type="button" className="cc-btn small" onClick={() => setWipe(false)}>Abbrechen</button>
+          </div>
+        </div>
+      )}
+      <details className="crm-more mc-explain"><summary>Was wird wo gespeichert?</summary>
+        <p><strong>Erinnerungen</strong>: nur was du ausdrücklich speicherst („Merk dir, dass …“). <strong>Gesprächsarchiv</strong>: der Chatverlauf.
+          <strong> Dateianhänge</strong>: nur bis zur nächsten Nachricht im Arbeitsspeicher. Jarvis nutzt je Frage nur passende Erinnerungen und zeigt an, welche.</p></details>
       {note && <div className="cc-notice mc-note" role="status">{note} <button type="button" className="cc-link" onClick={() => setNote(null)}>OK</button></div>}
       {searching && data.wissen.length === 0 && data.archiv.length === 0 && (
         <p className="cc-empty">Nichts gefunden zu „{data.suche}“. Jarvis erfindet keine Erinnerung – dazu ist nichts gespeichert.</p>
@@ -223,13 +248,13 @@ export function MemoryCenter({ canEdit }: { canEdit: boolean }) {
             </form>
           )}
           {data.wissen.length === 0 && !searching ? (
-            <p className="cc-empty">Noch keine dauerhaften Erinnerungen. Sag Jarvis „Merke dir …“ oder trage oben ein Ziel, eine Präferenz oder eine Entscheidung ein.</p>
+            <p className="cc-empty">Noch keine Erinnerungen. Sag „Merk dir, dass …“ oder trag oben etwas ein.</p>
           ) : <ul className="mc-list">{data.wissen.map((f) => <FactRow key={f.id + f.updated_at} fact={f} all={data.wissen} canEdit={canEdit} onChanged={changed} />)}</ul>}
           {(data.notizdateien?.length ?? 0) > 0 && (
             <section className="cc-card-box" aria-label="Arbeitsnotizen der Agenten">
               <header><h3>Arbeitsnotizen der Agenten (Dateien)</h3><span className="cc-tag">{data.notizdateien!.length}</span></header>
-              <p className="cc-hint" style={{ marginTop: 0 }}>Notizen, die das Modell selbst in <span className="cc-mono">~/.jarvis/memories</span> ablegt. Sie sind kein bestätigtes Wissen,
-                haben keinen Versionsverlauf und werden von der Wissenssuche nicht gefunden. Löschen: Datei im Finder entfernen.</p>
+              <p className="cc-hint" style={{ marginTop: 0 }} title="Seit Memory v1 legt das Modell dort nichts mehr ab, und die Dateien gehen nicht mehr an das Modell. Löschen: Datei im Finder entfernen.">
+                Alt, nicht mehr in Gebrauch: <span className="cc-mono">~/.jarvis/memories</span></p>
               <ul className="mc-list">{data.notizdateien!.map((n) => (
                 <li key={n.name} className="mc-turn"><div className="mc-meta"><span className="cc-mono">{n.name}</span><span>geändert {when(n.geaendert)}</span><span>{n.groesse} Bytes</span></div>
                   <p className="mc-jarvis">{n.auszug}</p></li>))}</ul>
@@ -237,10 +262,11 @@ export function MemoryCenter({ canEdit }: { canEdit: boolean }) {
           )}
         </>
       ) : data.archiv.length === 0 && !searching ? (
-        <p className="cc-empty">Das Gesprächsarchiv ist leer. Jede Text- und erkannte Sprachäußerung wird hier sofort mit Zeit, Kanal und Speicherstatus abgelegt.</p>
+        <p className="cc-empty">Das Gesprächsarchiv ist leer.</p>
       ) : <ul className="mc-list">{data.archiv.map((e) => <ArchiveRow key={e.id} item={e} canEdit={canEdit} onChanged={changed} />)}</ul>}
-      <p className="cc-hint">Quelle: {z.path} (nur auf diesem Mac). Gespeichert wird nur Text – kein Roh-Audio. Zugangsdaten werden vor dem Speichern geschwärzt bzw. abgelehnt.
-        Der Suchindex ist nie die einzige Kopie und lässt sich aus den Originaldaten neu aufbauen. Stand {when(data.stand)}.</p>
+      <details className="crm-more"><summary>Speicherort und Schutz · Stand {when(data.stand)}</summary>
+        <p>Quelle: <span className="cc-mono">{z.path}</span> (nur auf diesem Mac). Gespeichert wird nur Text, kein Roh-Audio. Zugangsdaten werden vor dem Speichern geschwärzt oder abgelehnt.
+          Der Suchindex ist nie die einzige Kopie und lässt sich neu aufbauen.</p></details>
     </div>
   );
 }

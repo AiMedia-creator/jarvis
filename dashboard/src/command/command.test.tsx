@@ -92,20 +92,46 @@ describe("Kommandozentrale", () => {
     expect(host.textContent).toContain("letzte bekannte Stand");
   });
 
-  it("Heute: zeigt, was den Nutzer braucht, und übergibt einen Auftrag direkt an Jarvis", async () => {
+  it("Heute: zeigt, was den Nutzer braucht, und übergibt einen Auftrag an das Command-Center-Fenster", async () => {
     mockFetch(() => undefined);
+    if (!globalThis.localStorage) { // Node 26: eigenes localStorage ist ohne Datei undefined und überdeckt das von happy-dom
+      const data = new Map<string, string>();
+      Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+        getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, String(v)),
+        removeItem: (k: string) => void data.delete(k) } });
+    }
+    const { takePendingCommand } = await import("./commandWindow");
+    const opened = { location: { href: "about:blank", search: "" }, focus: vi.fn() };
+    const open = vi.spyOn(window, "open").mockImplementation(() => opened as unknown as Window);
     const { host, onAsk } = await render();
     const queue = host.querySelector(".td-queue")!;
+    expect(host.querySelector(".td-head h2")!.textContent).toContain("Master");
     expect(host.querySelector(".td-head h2")!.textContent).toContain("Eine Sache braucht dich.");
     expect(queue.textContent).toContain("E-Mail senden");
     expect(queue.textContent).toContain("Ziel: Gmail");
+    expect(host.textContent).not.toContain("Zuletzt fertig"); // Abschnitt ist aus „Heute“ entfernt
     const input = host.querySelector<HTMLTextAreaElement>(".td-command textarea")!;
     await click(button(host.querySelector(".td-suggest")!, "Tagesbriefing"));
     expect(input.value).toContain("Was steht heute an?");
-    expect(onAsk).not.toHaveBeenCalled(); // Vorschläge füllen nur das Feld
+    expect(open).not.toHaveBeenCalled(); // Vorschläge füllen nur das Feld
     await act(async () => { host.querySelector<HTMLFormElement>(".td-command")!.requestSubmit(); await new Promise((r) => setTimeout(r, 0)); });
-    expect(onAsk).toHaveBeenCalledWith("Was steht heute an? Gib mir die drei wichtigsten Punkte.");
-    expect(host.querySelector(".cc-center .cc-transport")).not.toBeNull(); // weiter im Command Center
+    // Eigenes Fenster statt Abschnitt im Dashboard; der Auftrag wartet dort – nie in der Adresse.
+    expect(open).toHaveBeenCalledWith("", "jarvis-command");
+    expect(opened.location.href).toBe("?screen=command");
+    expect(onAsk).not.toHaveBeenCalled();
+    expect(host.querySelector(".cc-center")).toBeNull();
+    expect(takePendingCommand()).toBe("Was steht heute an? Gib mir die drei wichtigsten Punkte.");
+    expect(takePendingCommand()).toBeNull(); // genau einmal
+    open.mockRestore();
+  });
+
+  it("zeigt den Link, wenn der Browser das Command-Center-Fenster blockiert", async () => {
+    mockFetch(() => undefined);
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
+    const { host } = await render();
+    await click(host.querySelector<HTMLAnchorElement>(".cc-open-cc")!);
+    expect(host.querySelector('.cc-error a[href="?screen=command"]')).not.toBeNull();
+    open.mockRestore();
   });
 
   it("Heute: führt vom Eintrag direkt zur Entscheidung und benennt nicht geprüfte Quellen", async () => {

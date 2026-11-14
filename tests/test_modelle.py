@@ -25,7 +25,7 @@ BASE = {
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     for name in ("MOONSHOT_API_KEY", "OLLAMA_HOST", "JARVIS_OLLAMA_MODEL", "JARVIS_MOONSHOT_MODEL", "JARVIS_MODEL",
-                 "JARVIS_MOONSHOT_KEY", "JARVIS_CLAUDE_HILFSMODELL"):
+                 "JARVIS_MOONSHOT_KEY", "JARVIS_CLAUDE_HILFSMODELL", "JARVIS_BACKUP_MODELL"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(modelle.config, "load", lambda: {})
 
@@ -173,3 +173,106 @@ def test_einstellungen_stellen_nur_eingerichtete_modelle_um(monkeypatch):
     assert saved == {"model": "kimi"} and switched == ["kimi"]
     with pytest.raises(ValueError, match="unbekannt"):
         echtzeit.save_settings({"modell": "gpt-irgendwas"})
+
+
+# --- Backup-Modell bei Überlastung/Ratenlimit ---------------------------------------------------------------
+
+def _status_error(status: int, cls):
+    response = httpx.Response(status, request=httpx.Request("POST", "https://api.example/v1/messages"))
+    return cls("Overloaded" if status == 529 else "rate limited", response=response, body=None)
+
+
+class _Failing(Stream):
+    """Stream, der nach `tokens` Textstücken mit `error` abbricht."""
+
+    def __init__(self, error, tokens=()):
+        super().__init__(None, list(tokens))
+        self.error = error
+
+    @property
+    def text_stream(self):
+        yield from self.texts
+        raise self.error
+
+
+def _agent_with(script, monkeypatch, backup="opus"):
+    monkeypatch.setenv("JARVIS_BACKUP_MODELL", backup)
+    agent = make_agent()
+    agent.set_model("sonnet")
+    seen = []
+
+    def stream(**kw):
+        seen.append(kw["model"])
+        return script(len(seen))
+
+    agent.client = B(beta=B(messages=B(stream=stream)))
+    return agent, seen
+
+
+def test_backup_springt_bei_ueberlastung_ein_und_gilt_nur_fuer_diesen_zug(monkeypatch):
+    def script(n):
+        if n == 1:
+            return _Failing(_status_error(529, anthropic.InternalServerError))
+        return Stream(B(stop_reason="end_turn", content=[B(type="text", text="Antwort.")]), ["Antwort."])
+
+    agent, seen = _agent_with(script, monkeypatch)
+    assert agent.ask("Erste Frage?") == "Antwort."
+    assert seen == ["claude-sonnet-5-5", "claude-opus-5-5"]
+    agent.ask("Zweite Frage?")
+    assert seen[-1] == "claude-sonnet-5-5"  # nächster Zug wieder mit dem Hauptmodell
+
+
+def test_backup_auch_bei_ratenlimit(monkeypatch):
+    def script(n):
+        if n == 1:
+            return _Failing(_status_error(429, anthropic.RateLimitError))
+        return Stream(B(stop_reason="end_turn", content=[B(type="text", text="Ok.")]), ["Ok."])
+
+    agent, seen = _agent_with(script, monkeypatch)
+    assert agent.ask("Frage?") == "Ok." and seen == ["claude-sonnet-5-5", "claude-opus-5-5"]
+
+
+def test_kein_backup_wenn_schon_text_gesprochen_wurde(monkeypatch):
+    agent, seen = _agent_with(lambda n: _Failing(_status_error(529, anthropic.InternalServerError), ["Halb"]), monkeypatch)
+    answer = agent.ask("Frage?")
+    assert seen == ["claude-sonnet-5-5"] and "überlastet" in answer
+
+
+def test_kein_backup_bei_anderen_fehlern_oder_ohne_einstellung(monkeypatch):
+    agent, seen = _agent_with(lambda n: _Failing(_status_error(529, anthropic.InternalServerError)), monkeypatch, backup="aus")
+    assert "überlastet" in agent.ask("Frage?") and seen == ["claude-sonnet-5-5"]
+    # anderer Anbieter oder gleiches Modell zählt nicht als Backup
+    monkeypatch.setenv("JARVIS_BACKUP_MODELL", "kimi")
+    assert modelle.backup(modelle.resolve("sonnet")) is None
+    monkeypatch.setenv("JARVIS_BACKUP_MODELL", "sonnet")
+    assert modelle.backup(modelle.resolve("sonnet")) is None
+    monkeypatch.setenv("JARVIS_BACKUP_MODELL", "opus")
+    assert modelle.backup(modelle.resolve("sonnet")).model == "claude-opus-5-5"
+
+
+def test_backup_einstellung_wird_geprueft(monkeypatch):
+    from jarvis import echtzeit
+
+    saved = {}
+    monkeypatch.setattr(echtzeit.config, "save", lambda k, v: saved.__setitem__(k, v))
+    monkeypatch.setattr(echtzeit, "status", lambda model_id=None: {})
+    monkeypatch.setenv("JARVIS_MODEL", "sonnet")
+    with pytest.raises(ValueError, match="selben Anbieter"):
+        echtzeit.save_settings({"backup_modell": "kimi"})
+    with pytest.raises(ValueError, match="gleich"):
+        echtzeit.save_settings({"backup_modell": "sonnet"})
+    echtzeit.save_settings({"backup_modell": "opus"})
+    assert saved == {"backup_modell": "opus"}
+    echtzeit.save_settings({"backup_modell": "aus"})
+    assert saved == {"backup_modell": None}
+
+
+def test_verbindungsaufbau_hat_ein_kurzes_zeitlimit():
+    """Ein hängender Verbindungsversuch scheitert nach 5 s (und wird wiederholt), nicht erst nach dem vollen Limit."""
+    from jarvis import agent
+
+    limit = modelle.zeitlimit(60.0)
+    assert limit.connect == 5.0 and limit.read == 60.0
+    assert modelle.zeitlimit(4.0).connect == 4.0  # kurze Limits (Reinreden-Prüfung) werden nicht verlängert
+    client = agent.make_client()
+    assert client.timeout.connect == 5.0 and client.max_retries == 1

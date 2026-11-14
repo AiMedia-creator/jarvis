@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { CapabilityRun, GitHubSummary, Platform } from "./api";
+import "./center.css";
 
 const STATUS: Record<string, { label: string; tone: string }> = {
   PLANNED: { label: "wartend", tone: "wait" }, RUNNING: { label: "läuft", tone: "run" },
@@ -82,11 +83,11 @@ function Jobs({ platform, canEdit, busy, onAction, onOpenOrder, onStart, onOpenA
           {/\//.test(repo) ? "Analysieren" : "Suchen"}
         </button>
       </form>
-      <p className="cc-hint">Öffentliche Repos ohne Anmeldung. Wird nur gelesen: kein Code ausgeführt, nichts installiert, eigener Arbeitsbereich je Commit.
+      <p className="cc-hint"><span className="cc-tag" title="Öffentliche Repos ohne Anmeldung. Kein Code wird ausgeführt, nichts installiert; eigener Arbeitsbereich je Commit.">nur lesen</span>
         {github?.sperrgrund ? ` Gesperrt: ${github.sperrgrund}` : ""}</p>
       {note && <p className="cc-warn-text" role="alert">{note}</p>}
       <ol className="cc-runs" aria-label="Aufträge">
-        {platform.laeufe.length === 0 && <li className="cc-empty">Noch kein Auftrag. Starte oben eine GitHub-Analyse oder sag Jarvis z. B. „Analysiere das Repo anthropics/skills“.</li>}
+        {platform.laeufe.length === 0 && <li className="cc-empty">Noch kein Auftrag.</li>}
         {platform.laeufe.map((run) => {
           const st = STATUS[run.status] ?? { label: run.status, tone: "off" };
           const orderId = typeof run.ergebnis?.auftrag_id === "string" ? run.ergebnis.auftrag_id : null;
@@ -199,7 +200,6 @@ function Library({ platform, canEdit, onToggleSkill }: PlatformProps & { platfor
           : `nicht eingerichtet (${platform.github.token ? "Token vorhanden" : "kein JARVIS_GITHUB_TOKEN"}, ${platform.github.freigegeben.length ? `${platform.github.freigegeben.length} freigegeben` : "keine Repos in github_freigegeben"})`}.
         {" "}Code ausführen, Repo schreiben, Push, Merge und Veröffentlichen sind getrennte Rechte – keine Fähigkeit nutzt sie; jede bräuchte deine Freigabe und arbeitet nie direkt auf <code>main</code>.
       </p>
-      <p className="cc-hint">Claude-Code-Skills (z. B. /office-hours) sind Anweisungen für den Programmierassistenten und bewusst nicht Teil von Jarvis.</p>
     </div>
   );
 }

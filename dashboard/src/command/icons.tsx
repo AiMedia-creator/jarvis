@@ -18,6 +18,11 @@ const paths: Record<string, string> = {
   close: "M6 6l12 12M18 6 6 18",
   link: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1",
   mic: "M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zM6 11a6 6 0 0 0 12 0M12 17v4",
+  arrowLeft: "M15 5l-7 7 7 7",
+  arrowRight: "M9 5l7 7-7 7",
+  external: "M14 4h6v6M20 4l-9 9M18 14v6H4V6h6",
+  play: "M7 5l12 7-12 7z",
+  plus: "M12 5v14M5 12h14",
   attach: "M20 11.5 12 19.5a5 5 0 0 1-7-7L13.5 4a3.5 3.5 0 0 1 5 5L10 17.5a2 2 0 0 1-3-3L14.5 7",
 };
 

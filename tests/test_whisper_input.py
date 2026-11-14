@@ -52,3 +52,27 @@ def test_zwischenablage_liest_kopierten_text_und_schuetzt_passwoerter(monkeypatc
     assert policy.kind("zwischenablage_lesen") == "read" and policy.kind("in_zwischenablage") == "local"
     p = A.SYSTEM_PROMPT
     assert "zwischenablage_lesen" in p and "in_zwischenablage" in p
+
+
+def test_geratene_segmente_werden_verworfen():
+    """Geräusche und Echo-Reste liefert Whisper als Segmente mit sehr niedriger Sicherheit – die gelten nicht als Frage."""
+    class Seg:
+        def __init__(self, text, avg_logprob=None):
+            self.text = text
+            if avg_logprob is not None:
+                self.avg_logprob = avg_logprob
+
+    assert ears.sprach_text([Seg(" Und, ey, ey. ", -1.47)]) == ""
+    assert ears.sprach_text([Seg("Lasty Hot,", -1.07), Seg(" Was steht heute an? ", -0.2)]) == "Was steht heute an?"
+    assert ears.sprach_text([Seg("Ja, mach das.", -0.67)]) == "Ja, mach das."
+    assert ears.sprach_text([Seg("Hallo Jarvis")]) == "Hallo Jarvis"  # ohne Kennzahl (ältere Attrappen) bleibt der Text
+    assert ears.sprach_text([]) == ""
+
+
+def test_standardmodell_ist_small_und_bleibt_umstellbar(monkeypatch):
+    from jarvis import sprache
+
+    monkeypatch.delenv("JARVIS_WHISPER_MODEL", raising=False)
+    assert sprache.whisper_standard() == "small"
+    monkeypatch.setenv("JARVIS_WHISPER_MODEL", "base")
+    assert sprache.whisper_standard() == "base"

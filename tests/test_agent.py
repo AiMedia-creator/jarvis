@@ -61,17 +61,15 @@ def test_abbruch_behaelt_kontext():
 
 
 def test_gedaechtnis_im_prompt(tmp_path):
-    from jarvis import config
-
-    mem = config.data_dir() / "memories"
-    mem.mkdir(exist_ok=True)
-    (mem / "kunden.md").write_text("Max Muster ist wichtigster Kunde.", encoding="utf-8")
     a = A.Agent(channel="web")
+    a.memory_store.remember("Max Muster ist wichtigster Kunde.", "note", "user")
+    a.memory_store.remember("Lieblingsfarbe ist Blau.", "note", "user")
     a._append_user_turn("Wer ist mein wichtigster Kunde?")
     req = a._request()
     system = req["system"][0]["text"]
-    # Gedächtnis steht im Nutzerzug (dynamisch), nicht im gecachten Systemprompt
+    # Memory v1: nur die passende Erinnerung steht im Nutzerzug (dynamisch), nie im gecachten Systemprompt
     assert "Max Muster ist wichtigster Kunde." in req["messages"][-1]["content"]
+    assert "Lieblingsfarbe" not in req["messages"][-1]["content"]
     assert "Max Muster" not in system and "@@MEMORY@@" not in system
 
 

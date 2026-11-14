@@ -200,7 +200,7 @@ def save_settings(data: dict) -> dict:
     def set_model(key: str) -> None:
         agent().set_model(key)
 
-    return echtzeit.save_settings(data, set_model)
+    return echtzeit.save_settings(data, set_model, lambda: agent().reload())
 
 
 # --- HTTP ---------------------------------------------------------------------------

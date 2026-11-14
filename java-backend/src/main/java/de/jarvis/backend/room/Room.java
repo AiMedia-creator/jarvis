@@ -73,6 +73,11 @@ public final class Room {
     private long epoch;
     private long nextSequence;
     private String owner;
+    /** Zufälliges Ticket des aktuellen Besitzers; nur er bekommt es (WELCOME). Erlischt, sobald er den Raum verlässt. */
+    private String ownerTicket;
+    /** Session, über die der Besitzer verbunden ist (Schlüssel aus SessionService, nie die Session-ID). */
+    private String ownerSession;
+    private static final java.security.SecureRandom TICKETS = new java.security.SecureRandom();
     private String audioOwner;
     private UUID streamId;
     private CancellationToken generationToken;
@@ -148,7 +153,26 @@ public final class Room {
     public synchronized boolean has(String client) { return client != null && clients.containsKey(client); }
     public synchronized boolean isOwner(String client) { return client != null && client.equals(owner); }
 
-    public synchronized Client join(String client, String screen) {
+    /**
+     * Prüft den Besitzernachweis für Schreibzugriffe über HTTP: das Ticket muss dem des verbundenen Besitzers
+     * entsprechen UND die Anfrage muss über dieselbe Session kommen. Beobachter kennen das Ticket nicht.
+     */
+    public synchronized boolean ownerTicketValid(String ticket, String sessionKey) {
+        if (owner == null || ownerTicket == null || ticket == null || sessionKey == null || sessionKey.isEmpty()) return false;
+        if (ticket.length() > 128 || !clients.containsKey(owner)) return false;
+        boolean sameTicket = java.security.MessageDigest.isEqual(ticket.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                ownerTicket.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        boolean sameSession = java.security.MessageDigest.isEqual(sessionKey.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                ownerSession.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return sameTicket && sameSession;
+    }
+
+    /** Für Tests und Diagnose: das Ticket nur für den genannten Besitzer, sonst null. */
+    public synchronized String ownerTicketFor(String client) { return isOwner(client) ? ownerTicket : null; }
+
+    public synchronized Client join(String client, String screen) { return join(client, screen, "lokal"); }
+
+    public synchronized Client join(String client, String screen, String sessionKey) {
         if (!Protocol.validId(client)) throw new IllegalArgumentException("ungültiger client");
         if (clients.containsKey(client)) throw new IllegalStateException("Client ist bereits verbunden");
         if (clients.size() >= maxClients) throw new IllegalStateException("Raum ist voll");
@@ -159,7 +183,13 @@ public final class Room {
         Client clientRecord = new Client(client, parsed, Sinks.many().unicast()
                 .onBackpressureBuffer(new java.util.concurrent.ArrayBlockingQueue<>(CONTROL_QUEUE_LIMIT)));
         clients.put(client, clientRecord);
-        if (parsed == Screen.MAIN && owner == null) owner = client;
+        if (parsed == Screen.MAIN && owner == null) {
+            owner = client;
+            byte[] bytes = new byte[32];
+            TICKETS.nextBytes(bytes);
+            ownerTicket = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+            ownerSession = sessionKey == null ? "" : sessionKey;
+        }
         send(clientRecord, welcome(clientRecord));
         startMetricsIfNeeded();
         return clientRecord;
@@ -176,6 +206,8 @@ public final class Room {
             Sinks.Many<AudioFrame> departed = audioSink.getAndSet(newAudioSink(ring.capacity()));
             departed.tryEmitComplete();
             owner = null;
+            ownerTicket = null;
+            ownerSession = null;
         }
         if (clients.isEmpty() && metricsTask != null) {
             metricsTask.dispose();
@@ -540,7 +572,11 @@ public final class Room {
         if (fragments.isEmpty() && carryText.isEmpty()) {
             status = "idle";
             emitStateLocked("idle", null);
+            return;
         }
+        // Verworfene Zusatzaufnahme (Geräusch, zu kurz): die bereits gestellte Frage trotzdem beantworten –
+        // sonst bleibt der Raum auf „hört zu“ stehen und die Frage geht verloren.
+        dispatchLater(client);
     }
 
     /**
@@ -704,8 +740,15 @@ public final class Room {
         snapshot.put("transcripts", List.copyOf(transcriptHistory.values()));
         snapshot.put("logs", List.copyOf(logHistory));
         snapshot.put("metrics", metrics());
-        return json(Map.of("type", "WELCOME", "role", isOwner(client.id()) ? "owner" : "observer",
-                "snapshot", snapshot, "cities", cities, "cameras", cameras));
+        Map<String, Object> welcome = new LinkedHashMap<>();
+        welcome.put("type", "WELCOME");
+        welcome.put("role", isOwner(client.id()) ? "owner" : "observer");
+        welcome.put("snapshot", snapshot);
+        welcome.put("cities", cities);
+        welcome.put("cameras", cameras);
+        // Nur der Besitzer erhält das Ticket, und nur über seine eigene Steuerverbindung (nie per Broadcast).
+        if (isOwner(client.id())) welcome.put("owner_ticket", ownerTicket);
+        return json(welcome);
     }
 
     /** Zeit vom Satzbeginn der Vertonung bis zum ersten Ton-Stück (letzte 50 Sätze). */

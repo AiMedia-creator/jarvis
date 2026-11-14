@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-/** Einheitlicher, ruhiger Rahmen jeder Inhaltsansicht mit sichtbarem Rückweg ins Gespräch. */
+/** Einheitlicher Rahmen der „Mehr“-Ansichten (dunkle Bühne in der gemeinsamen Schiene) mit sichtbarem Rückweg. */
 export function ViewFrame({
   eyebrow,
   title,
@@ -28,8 +28,8 @@ export function ViewFrame({
           type="button"
           className="view-close"
           onClick={onBack}
-          aria-label="Zurück zum Gespräch"
-          title="Zurück zum Gespräch"
+          aria-label="Ansicht schließen, zurück zur Übersicht"
+          title="Ansicht schließen"
         >
           <span aria-hidden="true">×</span>
         </button>

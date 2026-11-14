@@ -44,7 +44,7 @@ public final class ControlWebSocketHandler implements WebSocketHandler {
         Room.Client joined;
         try {
             room = rooms.getOrCreate(roomId);
-            joined = room.join(client, screen);
+            joined = room.join(client, screen, auth.sessionKey(session.getHandshakeInfo().getHeaders().getFirst("Cookie")));
         } catch (RuntimeException error) {
             return session.close();
         }

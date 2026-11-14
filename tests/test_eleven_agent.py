@@ -42,10 +42,27 @@ def test_agent_anlegen_und_wiederverwenden(el):
     assert zweiter[0]["body"]["conversation_config"]["turn"]["turn_eagerness"] == "patient"
 
 
+def test_werkzeuge_werden_parallel_und_vollstaendig_angelegt(el):
+    """Nach einem Update ändern sich viele Werkzeuge: alle werden angelegt, jedes genau einmal, die Reihenfolge bleibt."""
+    import json
+
+    from jarvis import config
+
+    config.save("eleven_tool_ids", None)  # wie nach einem Update: nichts ist bei ElevenLabs bekannt
+    config.save("eleven_tool_hashes", None)
+    ids = E.sync_tools()
+    namen = [t.name for t in E.voice_tools()]
+    uploads = [e for e in el if e["path"] == "/v1/convai/tools"]
+    assert len(uploads) == len(namen) == len(ids) == len(set(ids))
+    assert sorted(e["body"]["tool_config"]["name"] for e in uploads) == sorted(namen)
+    gespeichert = json.loads(config.get("eleven_tool_ids"))
+    assert list(gespeichert) == namen and [gespeichert[n] for n in namen] == ids
+
+
 def test_run_tool_typen_und_audit(monkeypatch):
     from jarvis import audit
 
     out = E.run_tool("merken", {"notiz": "Testnotiz"})
-    assert out == "Gemerkt."
+    assert out.startswith("Als Vorschlag notiert")  # Memory v1: Sprachkern speichert nur Vorschläge
     assert E.run_tool("gibtsnicht", {}).startswith("Fehler")
     assert audit.tail(5)[0]["werkzeug"] == "merken"

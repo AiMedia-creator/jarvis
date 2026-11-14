@@ -81,7 +81,7 @@ export default function OpsView({
           <LogList items={logs} />
           <div className="protocol-note">
             <b>THOUGHT STREAMS</b>
-            <p>Nur sichtbare Status-, Werkzeug-Ereignisse und Antworten. Verborgene Modell-Gedankengänge werden nicht dargestellt.</p>
+            <p>Nur sichtbare Ereignisse und Antworten – keine verborgenen Modell-Gedanken.</p>
           </div>
         </section>
       </div>

@@ -128,7 +128,7 @@ class Bridge:
         self.slots = asyncio.Semaphore(16)
         self.speech_slots = asyncio.Semaphore(1)
         self.tts_slots = asyncio.Semaphore(3)
-        self.whisper_model = None
+        self.whisper_models: dict = {}  # je Whisper-Modellname einmal geladen
 
     @staticmethod
     async def json_body(request):
@@ -248,7 +248,10 @@ class Bridge:
                     # Meldungen ohne Textstrom (Budget, Zeitlimit, Schrittgrenze, Ausfall) sonst stumm: hörbar machen
                     emit({"type": "token", "text": answer})
                 jobs.set_result(job, answer or "")
-                emit({"type": "memory", "message": "Gespräch im dauerhaften Gedächtnis aktualisiert"})
+                used = list(getattr(agent, "_used_memories", None) or [])
+                # Memory v1: sichtbar machen, welche gespeicherten Erinnerungen für diese Antwort mitgeschickt wurden.
+                emit({"type": "memory", "message": "Gespräch im Chatverlauf gespeichert",
+                      **({"erinnerungen": used} if used else {})})
                 emit({"type": "done"})
             except Exception as exc:
                 from .agent import Cancelled
@@ -564,6 +567,11 @@ class Bridge:
                 return web.json_response(await asyncio.to_thread(store.forget_report, ident))
             if action == "archiv_loeschen":
                 return web.json_response(await asyncio.to_thread(store.delete_episode, ident))
+            if action == "alle_loeschen":
+                # Endgültig: nur mit ausdrücklicher Bestätigung aus der Oberfläche (zweiter Klick).
+                if data.get("bestaetigt") is not True:
+                    return web.json_response({"fehler": "Bestätigung fehlt."}, status=400)
+                return web.json_response({"ok": True, "geloescht": await asyncio.to_thread(store.forget_all)})
             if action == "index_neu":
                 return web.json_response({"ok": True, **await asyncio.to_thread(store.rebuild_index)})
         except KeyError:
@@ -593,6 +601,18 @@ class Bridge:
 
     # --- Aus der früheren Oberfläche (8765) übernommen: Einstellungen, Echtzeit, Jobs, Protokolle, Ereignisse ---
 
+    def _reload_prompts(self) -> None:
+        """Systemprompts der laufenden Agenten neu aufbauen (z. B. nach Wechsel der Gesprächssprache)."""
+        with self.guard:
+            agents = list(self.agents.values())
+        webui = sys.modules.get("jarvis.webui")
+        if webui is not None and getattr(webui, "_agent", None) is not None:
+            agents.append(webui._agent)
+        for agent in agents:
+            with contextlib.suppress(Exception):
+                if hasattr(agent, "reload"):
+                    agent.reload()
+
     def _set_model(self, key: str) -> None:
         """Laufende Agenten auf das neue Modell (ggf. anderer Anbieter) umstellen, ohne das Gespräch zu verlieren."""
         with self.guard:
@@ -617,7 +637,7 @@ class Bridge:
         if self.demo:
             return web.json_response({"fehler": "Demo-Modus: Einstellungen sind gesperrt."}, status=403)
         try:
-            return web.json_response(await asyncio.to_thread(echtzeit.save_settings, data, self._set_model))
+            return web.json_response(await asyncio.to_thread(echtzeit.save_settings, data, self._set_model, self._reload_prompts))
         except (ValueError, TypeError) as exc:
             return web.json_response({"fehler": str(exc)[:200]}, status=400)
 
@@ -749,6 +769,111 @@ class Bridge:
         except ValueError:
             tage = 7
         return web.json_response(await asyncio.to_thread(anrufe.uebersicht, tage))
+
+    # --- Cold-Call-CRM: Leads, Ergebnisse, Call-Session (nur lokale Daten) ---
+
+    @staticmethod
+    def _lead_fehler(exc):
+        from . import leads
+        if isinstance(exc, leads.Konflikt):
+            return web.json_response({"fehler": str(exc), "aktuell": exc.current}, status=409)
+        if isinstance(exc, leads.Duplikat):
+            return web.json_response({"fehler": str(exc), "duplikat": exc.vorhanden, "hart": exc.hart}, status=409)
+        if isinstance(exc, leads.NichtGefunden):
+            return web.json_response({"fehler": str(exc)}, status=404)
+        return web.json_response({"fehler": str(exc)}, status=400)
+
+    async def leads_uebersicht(self, request):
+        from . import leads
+        try:
+            q = request.query
+            return web.json_response(await asyncio.to_thread(
+                leads.uebersicht, q.get("status", "")[:30], q.get("q", "")[:80], int(q.get("offset", "0") or 0),
+                int(q.get("limit", str(leads.SEITE_STANDARD)) or leads.SEITE_STANDARD), q.get("snapshot", "")[:64], q.get("um", "")[:64]))
+        except ValueError:
+            return web.json_response({"fehler": "offset und limit müssen Zahlen sein."}, status=400)
+        except leads.LeadError as exc:
+            return self._lead_fehler(exc)
+
+    async def lead_detail(self, request):
+        from . import leads
+        try:
+            return web.json_response(await asyncio.to_thread(leads.detail, request.match_info["id"]))
+        except leads.LeadError as exc:
+            return self._lead_fehler(exc)
+
+    async def leads_session(self, request):
+        from . import leads
+        try:
+            seit = float(request.query.get("seit", "0"))
+        except ValueError:
+            return web.json_response({"fehler": "seit muss ein Zeitstempel sein."}, status=400)
+        return web.json_response(await asyncio.to_thread(leads.session_zahlen, seit))
+
+    async def lead_anlegen(self, request):
+        from . import leads
+        data = await self.json_body(request)
+        try:
+            lead = await asyncio.to_thread(leads.anlegen, data.get("felder") or {}, data.get("request_id"),
+                                           bool(data.get("duplikat_bestaetigt")))
+        except leads.LeadError as exc:
+            return self._lead_fehler(exc)
+        return web.json_response({"lead": lead})
+
+    async def lead_aendern(self, request):
+        from . import leads
+        data = await self.json_body(request)
+        if not isinstance(data.get("version"), int):
+            return web.json_response({"fehler": "Version fehlt."}, status=400)
+        try:
+            lead = await asyncio.to_thread(leads.aendern, request.match_info["id"], data.get("aenderungen") or {},
+                                           data["version"], bool(data.get("duplikat_bestaetigt")))
+        except leads.LeadError as exc:
+            return self._lead_fehler(exc)
+        return web.json_response({"lead": lead})
+
+    async def lead_ergebnis(self, request):
+        """Anruf-Ergebnis erfassen. Bei „Meeting gebucht“ entsteht auf Wunsch eine Kalender-VORLAGE (Freigabe nötig)."""
+        from . import leads
+        data = await self.json_body(request)
+        if not isinstance(data.get("version"), int):
+            return web.json_response({"fehler": "Version fehlt."}, status=400)
+        try:
+            result = await asyncio.to_thread(
+                leads.ergebnis, request.match_info["id"], str(data.get("status") or ""), data["version"],
+                data.get("request_id"), data.get("notiz") or "", data.get("followup_am") or "",
+                data.get("naechster_schritt") or "", data.get("termin_beginn") or "", data.get("termin_ende") or "",
+                data.get("dauer_s"))
+        except leads.LeadError as exc:
+            return self._lead_fehler(exc)
+        if result["lead"]["status"] == "meeting_gebucht" and data.get("kalender") and not result["wiederholt"]:
+            result["kalender"] = ({"status": "demo", "hinweis": "Demo-Modus: kein Kalender."} if self.demo
+                                  else await asyncio.to_thread(leads.termin_vorlage, result["lead"]))
+        return web.json_response(result)
+
+    async def lead_notiz(self, request):
+        from . import leads
+        data = await self.json_body(request)
+        try:
+            return web.json_response(await asyncio.to_thread(leads.notiz_hinzufuegen, request.match_info["id"],
+                                                             str(data.get("text") or ""), data.get("request_id")))
+        except leads.LeadError as exc:
+            return self._lead_fehler(exc)
+
+    async def leads_import(self, request):
+        from . import leads
+        # Rohe CSV-Bytes (nicht JSON): so gilt das Limit von 1 MB für die Datei selbst, und kaputtes UTF-8 fällt auf.
+        chunks, size = [], 0
+        async for chunk in request.content.iter_chunked(65536):
+            size += len(chunk)
+            if size > leads.CSV_MAX_BYTES:
+                return web.json_response({"fehler": f"Die CSV-Datei ist zu groß (höchstens {leads.CSV_MAX_BYTES // 1_000_000} MB)."}, status=413)
+            chunks.append(chunk)
+        ausfuehren = request.query.get("ausfuehren", "") in ("1", "true")
+        try:
+            return web.json_response(await asyncio.to_thread(leads.csv_import, b"".join(chunks), ausfuehren))
+        except leads.LeadError as exc:
+            return self._lead_fehler(exc)
 
     async def content_uebersicht(self, request):
         from . import content
@@ -895,15 +1020,28 @@ class Bridge:
             timing["start"] = time.monotonic()
             import numpy as np
             from faster_whisper import WhisperModel
-            if self.whisper_model is None:
-                self.whisper_model = WhisperModel(config.get("whisper_model", "base"), device="cpu", compute_type="int8",
-                                                  cpu_threads=max(1, min(os.cpu_count() or 2, 4)), num_workers=1)
+            from . import sprache
+            from .ears import sprach_text, vocabulary_prompt
+
+            def modell(name: str):  # je Modellname einmal laden
+                cache = self.whisper_models
+                if name not in cache:
+                    cache[name] = WhisperModel(name, device="cpu", compute_type="int8",
+                                               cpu_threads=max(1, min(os.cpu_count() or 2, 4)), num_workers=1)
+                return cache[name]
             audio = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768
-            from .ears import clean_transcript, vocabulary_prompt
-            segments, info = self.whisper_model.transcribe(audio, language="de", beam_size=1, vad_filter=True,
-                                                          condition_on_previous_text=False,
-                                                          initial_prompt=vocabulary_prompt())
-            text = clean_transcript(" ".join(segment.text.strip() for segment in segments))[:8000]
+            deutsch_modell = sprache.whisper_standard()
+            sprache_code = sprache.whisper_sprache()
+            if sprache_code is None:  # Automatisch: das schnelle Modell erkennt die Sprache, nur Deutsch oder Arabisch
+                sprache_code = sprache.waehle(modell(deutsch_modell).detect_language(audio)[2])
+            arabisch = sprache_code == "ar"
+            # Arabisch: genaueres Modell, Strahlsuche und ägyptischer Vorgabetext; Deutsch bleibt schnell wie bisher.
+            segments, info = modell(sprache.whisper_modell(deutsch_modell) if arabisch else deutsch_modell).transcribe(
+                audio, language=sprache_code, beam_size=3 if arabisch else 1, vad_filter=True,
+                condition_on_previous_text=False,
+                initial_prompt=sprache.VORGABE_MASRI if arabisch else vocabulary_prompt())
+            timing["sprache"] = sprache_code
+            text = sprach_text(segments)[:8000]  # geratene Segmente (Geräusch, Echo-Rest) fallen weg
             timing["end"] = time.monotonic()
             return text
         future = asyncio.get_running_loop().run_in_executor(self.speech_pool, decode)
@@ -916,7 +1054,7 @@ class Bridge:
             raise web.HTTPServiceUnavailable(text="Lokales Whisper-Modell nicht verfügbar; Installation und Cache prüfen")
         # Gemessene Zeiten für die Regie-Kette: Warten in der Bridge (Upload, Prüfung, Slot) und reines Dekodieren.
         start, end = timing.get("start", received), timing.get("end", time.monotonic())
-        return web.json_response({"text": text,
+        return web.json_response({"text": text, "sprache": timing.get("sprache"),
                                   "bridge_wait_ms": round(max(0.0, start - received) * 1000, 1),
                                   "decode_ms": round(max(0.0, end - start) * 1000, 1)})
 
@@ -1114,6 +1252,14 @@ def create_app(token: str | None = None, demo: bool | None = None) -> web.Applic
     app.router.add_get("/internal/logs/{art}", bridge.logs)
     app.router.add_get("/internal/events", bridge.events_poll)
     app.router.add_get("/internal/anrufe", bridge.anrufe_uebersicht)
+    app.router.add_get("/internal/leads", bridge.leads_uebersicht)
+    app.router.add_get("/internal/leads/session", bridge.leads_session)
+    app.router.add_post("/internal/leads", bridge.lead_anlegen)
+    app.router.add_post("/internal/leads/import", bridge.leads_import)
+    app.router.add_get("/internal/leads/{id}", bridge.lead_detail)
+    app.router.add_patch("/internal/leads/{id}", bridge.lead_aendern)
+    app.router.add_post("/internal/leads/{id}/ergebnis", bridge.lead_ergebnis)
+    app.router.add_post("/internal/leads/{id}/notiz", bridge.lead_notiz)
     app.router.add_get("/internal/content", bridge.content_uebersicht)
     app.router.add_post("/internal/content/status", bridge.content_status)
     app.router.add_get("/internal/faehigkeiten", bridge.faehigkeiten_list)

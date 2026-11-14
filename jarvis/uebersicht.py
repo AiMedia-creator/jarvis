@@ -12,6 +12,12 @@ import time
 from . import config
 
 
+def _whisper_standard() -> str:
+    from . import sprache
+
+    return sprache.whisper_standard()
+
+
 def _ok(flag: bool) -> str:
     return "bereit" if flag else "nicht_eingerichtet"
 
@@ -125,7 +131,7 @@ def speech_facts() -> dict:
         "stimme_anbieter": "ElevenLabs" if usable else "Microsoft (edge-tts)",
         "stimme_modell": config.get("elevenlabs_model", "eleven_flash_v2_5") if usable else "",
         "stimme_hinweis": getattr(tts, "eleven_problem", "") or "",
-        "erkennung": f"Whisper {config.get('whisper_model', 'base')} · lokal",
+        "erkennung": f"Whisper {_whisper_standard()} · lokal",
     }
 
 
@@ -149,6 +155,18 @@ def automations_status() -> dict:
 
 #: Werkzeuge, hinter denen ein eigener Unter-Agent arbeitet (eigene Modellaufrufe, eigener Auftrag).
 SUB_AGENTS = {"unternehmer_strategie": ("gremium", "Unternehmer-Fachgremium"), "tiefenrecherche": ("recherche", "Tiefenrecherche")}
+
+
+GESPRAECHS_ARTEN = {"vordergrund", "echtzeit"}
+
+
+def job_klasse(job: dict) -> str:
+    """„gespraech“ für Chat- und Echtzeit-Züge, sonst „job“.
+
+    Ausschlussliste statt Erlaubnisliste: eine unbekannte oder neue Art bleibt als Job sichtbar. Fehlt die Art,
+    gilt wie in ``jobs.create`` der Standard „vordergrund“ (ein Zug im Gespräch).
+    """
+    return "gespraech" if (job.get("art") or "vordergrund") in GESPRAECHS_ARTEN else "job"
 
 
 def agent_of(job: dict) -> dict:
@@ -191,6 +209,7 @@ def jobs_view(limit: int = 40) -> dict:
         github = ((lauf.get("ergebnis") or {}).get("github") or {}) if isinstance(lauf.get("ergebnis"), dict) else {}
         out.append({
             "id": job["id"], "titel": job.get("titel") or "Auftrag", "art": job.get("art") or "vordergrund",
+            "klasse": job_klasse(job),
             "status": job.get("status"), "agent": agent_of(job), "unteragenten": sub,
             "gespraech": job.get("conversation"), "start": job.get("start"), "ende": job.get("ende"), "letzte_aktivitaet": last,
             "schritte": [{"id": s.get("id"), "werkzeug": s.get("werkzeug"), "status": s.get("status"),

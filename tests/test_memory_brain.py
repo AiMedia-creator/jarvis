@@ -66,7 +66,7 @@ def test_sensible_daten_werden_ueber_das_werkzeug_abgelehnt(tmp_path):
         tool.call("wissen_speichern", {"content": "Mein Passwort: hunter22secret"})
     saved = tool.call("wissen_speichern", {"content": "Bevorzugt kurze Antworten", "gueltig_bis": "2099-01-01"})
     assert saved["valid_until"].startswith("2099-01-01") and saved["source"] == "agent"
-    assert saved["status"].startswith("Neu gespeichert")
+    assert saved["status"].startswith("NUR VORSCHLAG") and saved["consent"] == "vorschlag"
     assert tool.call("wissen_speichern", {"content": "Bevorzugt kurze Antworten"})["status"].startswith("Bereits vorhanden")
 
 
@@ -88,72 +88,5 @@ def test_kategorien_werden_vereinheitlicht_und_rueckfallebene_speichert_keinen_w
     assert skipped["skipped"] and m.stats()["facts"] == 1
 
 
-def test_automatische_erkennung_nur_wenn_modell_nichts_gespeichert_hat(tmp_path):
-    import types
-
-    B = types.SimpleNamespace
-    m = MemoryStore(tmp_path / "m.sqlite3")
-
-    class Stream:
-        def __init__(self, final, texts=()):
-            self.final, self.texts = final, list(texts)
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            pass
-
-        @property
-        def text_stream(self):
-            yield from self.texts
-
-        def get_final_message(self):
-            return self.final
-
-    save = B(type="tool_use", id="w1", name="wissen_speichern", input={"content": "Trinkt Tee", "category": "Vorliebe"})
-    steps = [Stream(B(stop_reason="tool_use", content=[save], usage=None)),
-             Stream(B(stop_reason="end_turn", content=[B(type="text", text="Gemerkt.")], usage=None), ["Gemerkt."])]
-    a = A.Agent(channel="web", conversation_id="merk-test")
-    a.memory_store = m
-    a.native_memory = A.NativeMemoryTool(m)
-    a.client = B(beta=B(messages=B(stream=lambda **kw: steps.pop(0))))
-    a.ask("Merke dir als Vorliebe: Ich trinke Tee")
-    assert m.stats()["facts"] == 1  # nur die Modell-Notiz, kein automatisches Duplikat
-    final = B(stop_reason="end_turn", content=[B(type="text", text="Ok.")], usage=None)
-    a.client = B(beta=B(messages=B(stream=lambda **kw: Stream(final, ["Ok."]))))
-    a.ask("Merke dir als Projekt: Orbit startet im Mai")
-    contents = [f["content"] for f in m.search("Orbit Mai", 10)["facts"]]
-    assert "Orbit startet im Mai" in contents  # Rückfallebene greift, Präfix "als Projekt:" entfernt
-
-
-def test_rueckfallebene_speichert_nicht_wenn_jarvis_nachfragt(tmp_path):
-    import types
-
-    B = types.SimpleNamespace
-    m = MemoryStore(tmp_path / "m.sqlite3")
-
-    class Stream:
-        def __init__(self, final, texts=()):
-            self.final, self.texts = final, list(texts)
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            pass
-
-        @property
-        def text_stream(self):
-            yield from self.texts
-
-        def get_final_message(self):
-            return self.final
-
-    question = "Das widerspricht deiner Notiz. Welche gilt?"
-    final = B(stop_reason="end_turn", content=[B(type="text", text=question)], usage=None)
-    a = A.Agent(channel="web", conversation_id="frage-test")
-    a.memory_store = m
-    a.client = B(beta=B(messages=B(stream=lambda **kw: Stream(final, [question]))))
-    a.ask("Merke dir: Ich trinke meinen Kaffee mit Milch")
-    assert m.stats()["facts"] == 0
+# Die frühere automatische Erkennung („Ich bevorzuge …“, „Merke dir …“ nebenbei) gibt es mit Memory v1 nicht mehr;
+# die neuen Regeln prüft tests/test_erinnerungen.py.

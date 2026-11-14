@@ -37,6 +37,19 @@ def load() -> dict:
         return {}
 
 
+def anrede() -> str:
+    """Wie Jarvis den Nutzer anspricht (Einstellung ``anrede`` bzw. JARVIS_ANREDE; Standard „Master“; leer = keine)."""
+    value = (get("anrede", "Master") or "").strip()
+    return value[:40] if value.replace(" ", "").replace("-", "").isalpha() else "Master"
+
+
+def anrede_satz() -> str:
+    """Zusatz für die Systemprompts. Die Anrede ändert nicht das Du und nicht die Haltung auf Augenhöhe."""
+    name = anrede()
+    return (f"\n\n# Anrede\nSprich den Nutzer mit „{name}“ an – am Anfang einer Antwort oder bei einer Rückfrage, "
+            "nicht in jedem Satz. Du bleibst beim Du und sagst weiterhin offen deine Meinung.") if name else ""
+
+
 def get(key: str, default: str | None = None) -> str | None:
     value = os.getenv(f"JARVIS_{key.upper()}")
     if not value:

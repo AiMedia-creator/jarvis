@@ -44,56 +44,7 @@ h1, h2, h3, p { margin: 0; }
   color: var(--j-amber); border: 1px solid var(--j-line); background: rgba(0, 0, 0, .5); opacity: .7;
 }
 
-/* ---------- Voice-Core ---------- */
-.voice-core {
-  position: absolute; z-index: 3; left: 50%; top: 50%;
-  width: min(78vmin, 720px); aspect-ratio: 1; transform: translate(-50%, -50%);
-  transition: width 700ms var(--ease), left 700ms var(--ease), top 700ms var(--ease), transform 700ms var(--ease), opacity 400ms;
-  pointer-events: none;
-}
-.voice-core canvas { width: 100%; height: 100%; display: block; pointer-events: auto; }
 /* Während Inhalte offen sind: kleiner Präsenzpunkt unten links, verdeckt nichts. */
-.voice-core.compact { width: 132px; left: 74px; top: calc(100% - 92px); }
-.voice-core.compact canvas { cursor: pointer; }
-
-/* ---------- Dock (nur bei Bewegung/Fokus sichtbar) ---------- */
-.dock {
-  position: fixed; left: 50%; bottom: max(18px, env(safe-area-inset-bottom)); z-index: 6;
-  width: min(720px, calc(100vw - 32px)); transform: translate(-50%, 14px);
-  opacity: 0; pointer-events: none; transition: opacity 260ms var(--ease), transform 260ms var(--ease);
-}
-.dock.revealed, .dock:focus-within { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
-.dock-bar {
-  display: flex; align-items: center; gap: 8px; padding: 8px;
-  background: rgba(8, 6, 4, .72); -webkit-backdrop-filter: blur(18px) saturate(140%); backdrop-filter: blur(18px) saturate(140%);
-  border: 1px solid rgba(255, 149, 0, .18); border-radius: 18px; box-shadow: 0 18px 50px rgba(0, 0, 0, .55);
-}
-.dock-bar > button, .dock-bar .mic-btn {
-  flex: none; height: 44px; min-width: 44px; padding: 0 14px; border-radius: 12px;
-  border: 1px solid rgba(255, 149, 0, .22); background: rgba(255, 149, 0, .06); color: var(--j-amber-hi);
-  font: 500 12px var(--j-mono); letter-spacing: .06em; transition: background .15s, border-color .15s;
-}
-.dock-bar > button:hover:not(:disabled), .dock-bar .mic-btn:hover { background: rgba(255, 149, 0, .14); border-color: var(--j-amber); }
-.dock-bar .mic-btn.active { color: #1a0f00; background: var(--j-amber); border-color: var(--j-amber); box-shadow: 0 0 22px rgba(255, 149, 0, .45); }
-.dock-stop { color: var(--j-red) !important; border-color: rgba(239, 68, 68, .35) !important; background: rgba(239, 68, 68, .08) !important; }
-.dock-menu.active { background: rgba(255, 149, 0, .18) !important; }
-.dock-input { flex: 1; display: flex; min-width: 0; align-items: center; gap: 6px; height: 44px; padding: 0 6px 0 14px; border-radius: 12px; background: rgba(0, 0, 0, .55); border: 1px solid rgba(255, 255, 255, .06); }
-.dock-input:focus-within { border-color: rgba(255, 149, 0, .45); }
-.dock-input input { flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; background: none; color: var(--j-text); font-size: 15px; }
-.dock-input input::placeholder { color: var(--j-faint); }
-.dock-send { width: 34px; height: 34px; border-radius: 9px; border: 0; background: var(--j-amber); color: #1a0f00; font-weight: 700; }
-.dock-alert { margin-bottom: 8px; padding: 9px 14px; border-radius: 12px; font-size: 13px; color: #ffd7d7; background: rgba(60, 10, 10, .78); border: 1px solid rgba(239, 68, 68, .4); }
-.dock-popover {
-  position: absolute; right: 0; bottom: calc(100% + 10px); display: flex; flex-direction: column; min-width: 240px; padding: 8px;
-  background: rgba(10, 8, 6, .9); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
-  border: 1px solid rgba(255, 149, 0, .2); border-radius: 16px; box-shadow: 0 20px 60px rgba(0, 0, 0, .6);
-}
-.dock-popover button, .dock-popover a {
-  text-align: left; padding: 10px 12px; border: 0; border-radius: 10px; background: none; color: var(--j-text-dim);
-  font-size: 14px; text-decoration: none;
-}
-.dock-popover button:hover, .dock-popover a:hover, .dock-popover .active { background: rgba(255, 149, 0, .12); color: var(--j-amber-hi); }
-.dock-popover hr { width: 100%; border: 0; border-top: 1px solid rgba(255, 255, 255, .08); margin: 6px 0; }
 
 /* ---------- Gemeinsamer Ansichtsrahmen ---------- */
 .view-frame { position: absolute; inset: 0; display: flex; flex-direction: column; padding: clamp(18px, 4vw, 44px); }
@@ -291,11 +242,6 @@ body:has(.ops-shell) { overflow: auto; }
 
 /* ---------- Mobil / Touch ---------- */
 @media (max-width: 760px) {
-  .voice-core { width: min(92vmin, 520px); }
-  .voice-core.compact { width: 92px; left: 52px; top: calc(100% - 150px); }
-  .dock-bar { flex-wrap: wrap; border-radius: 16px; }
-  .dock-input { order: -1; flex-basis: 100%; }
-  .dock-bar > button, .dock-bar .mic-btn { flex: 1; }
   .news-list { left: 16px; right: 16px; width: auto; bottom: 170px; max-height: 42vh; }
   .ops-columns { grid-template-columns: 1fr; }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -303,7 +249,6 @@ body:has(.ops-shell) { overflow: auto; }
   .memory-form { grid-template-columns: 1fr; }
 }
 /* Touch-Geräte ohne Hover: Bedienung bleibt erreichbar (Tippen blendet ein). */
-@media (hover: none) { .dock-bar > button, .dock-bar .mic-btn { min-height: 48px; } }
 
 /* ---------- Reduzierte Bewegung ---------- */
 @media (prefers-reduced-motion: reduce) {
@@ -312,10 +257,9 @@ body:has(.ops-shell) { overflow: auto; }
 }
 
 /* Weltansicht: Präsenzpunkt links mittig, damit er weder Ticker noch Bedienfeld verdeckt. */
-.stage[data-view="world"] .voice-core.compact { width: 96px; left: 58px; top: 50%; }
 
 /* ---------- Arbeitsbereich (Dashboard, helles Design) ---------- */
-.stage.workspace { background: #F4F6F8; }
+.stage.workspace { background: #DDE3E6; }
 .ws-alert { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 9; padding: 8px 14px; border-radius: 8px;
   background: #172B43; color: #fff; font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; box-shadow: 0 4px 16px rgba(23,43,67,.25); }
-.stage.workspace .demo-mark { top: auto; bottom: 16px; right: 16px; color: #6B4E16; background: #FFF6E0; border-color: #F1DFB0; opacity: 1; }
+.stage.workspace .demo-mark { top: auto; bottom: 16px; right: 16px; color: #14202B; background: #C8F031; border-color: #14202B; opacity: 1; }

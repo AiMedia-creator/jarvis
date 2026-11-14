@@ -40,7 +40,7 @@ READ = {
     "github_suchen",  # oeffentliche Suche, nur lesend
     "projekt_liste", "anruf_karte", "anruf_kennzahlen", "content_liste",  # Anruf-Copilot, nur lesend
     "sheet_lesen",  # Google Sheets, nur lesend
-    "browser_seite", "browser_bild", "browser_tabs", "browser_scrollen",  # Chrome lesen/scrollen (browser.py)
+    "gbrain_suchen", "browser_seite", "browser_bild", "browser_tabs", "browser_scrollen",  # Chrome lesen/scrollen (browser.py)
 }
 # MCP-Werkzeuge, die in ~/.jarvis/mcp.json als "nur_lesen" markiert sind, meldet mcp_client hier an.
 MCP_READ: set[str] = set()

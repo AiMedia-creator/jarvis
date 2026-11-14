@@ -14,7 +14,7 @@ from typing import Iterator
 
 import requests
 
-from . import config
+from . import config, sprache
 
 ELEVEN_API = "https://api.elevenlabs.io/v1"
 DEFAULT_EDGE = "edge:de-DE-ConradNeural"
@@ -29,6 +29,8 @@ EDGE_VOICES = [
     ("edge:de-DE-KatjaNeural", "Katja – weiblich, klar"),
     ("edge:de-DE-AmalaNeural", "Amala – weiblich, freundlich"),
     ("edge:en-GB-RyanNeural", "Ryan – britisch (Film-Jarvis, spricht Deutsch mit Akzent)"),
+    ("edge:ar-EG-ShakirNeural", "Shakir – ägyptisch, männlich (für arabische Antworten)"),
+    ("edge:ar-EG-SalmaNeural", "Salma – ägyptisch, weiblich (für arabische Antworten)"),
 ]
 # Fertige ElevenLabs-Stimmen (im Gratis-Tarif per API nutzbar), sprechen mit dem Multilingual-Modell Deutsch.
 ELEVEN_VOICES = [
@@ -91,10 +93,11 @@ def synthesize(text: str, voice: str | None = None) -> bytes:
 
     from .speech import for_speech
 
-    text = for_speech(text)  # nur die Vertonung bekommt die sprechbare Fassung
+    voice = sprache.stimme_fuer(text, voice or current_voice())  # arabischer Satz -> ägyptische Stimme
+    text = sprache.fuer_sprache(text) if sprache.ist_arabisch(text) else for_speech(text)  # nur die Vertonung
     if _audio_cache is None:
         _audio_cache = OrderedDict()
-    key = (text, voice or current_voice(), speed())
+    key = (text, voice, speed())
     if key in _audio_cache:
         _audio_cache.move_to_end(key)
         return _audio_cache[key]
@@ -128,7 +131,7 @@ def _synthesize(text: str, voice: str | None = None) -> bytes:
 def _eleven(text: str, voice_id: str) -> bytes:
     headers = {"xi-api-key": config.get("elevenlabs_key") or ""}
     model = config.get("elevenlabs_model", "eleven_flash_v2_5")  # Flash = schnellste Antwortzeit
-    body = {"text": text, "model_id": model, "language_code": "de",
+    body = {"text": text, "model_id": model, "language_code": sprache.sprachcode(text),
             "voice_settings": {"speed": max(0.7, min(1.2, speed()))}}
     url = f"{ELEVEN_API}/text-to-speech/{voice_id}"
     params = {"output_format": "mp3_44100_128"}
@@ -194,7 +197,7 @@ def _eleven_stream(text: str, voice_id: str, cancel: threading.Event | None) -> 
     model = config.get("elevenlabs_model", "eleven_flash_v2_5")
     url = f"{ELEVEN_API}/text-to-speech/{voice_id}/stream"
     params = {"output_format": f"pcm_{PCM_RATE}"}
-    body = {"text": text, "model_id": model, "language_code": "de",
+    body = {"text": text, "model_id": model, "language_code": sprache.sprachcode(text),
             "voice_settings": {"speed": max(0.7, min(1.2, speed()))}}
     http = _http()
     r = http.post(url, params=params, headers=headers, json=body, timeout=STREAM_TIMEOUT, stream=True)
@@ -218,8 +221,8 @@ def stream(text: str, voice: str | None = None, cancel: threading.Event | None =
 
     from .speech import for_speech
 
-    spoken = for_speech(text)
-    v = voice or current_voice()
+    spoken = sprache.fuer_sprache(text) if sprache.ist_arabisch(text) else for_speech(text)
+    v = sprache.stimme_fuer(text, voice or current_voice())  # arabischer Satz -> ägyptische Stimme
     key = (spoken, v, speed())
     with _stream_lock:
         if _stream_cache is None:

@@ -103,8 +103,17 @@ beforeAll(() => {
 });
 afterAll(() => vi.restoreAllMocks());
 
-describe("adaptive Oberfläche", () => {
-  it("startet im Arbeitsbereich, öffnet Ansichten passend und hält die Audio-Laufzeit stabil", async () => {
+const waitFor = async (selector: string) => { for (let i = 0; i < 200 && !document.querySelector(selector); i++) await flush(); };
+const welcome = async (control: FakeSocket) => {
+  await act(async () => {
+    control.open();
+    control.emit({ type: "WELCOME", role: "owner", snapshot: { status: "idle", metrics: {}, logs: [], transcripts: [] } });
+  });
+  await flush();
+};
+
+describe("Dashboard-Fenster", () => {
+  it("hat eine Schiene für alles, öffnet „Mehr“-Ansichten darin und hält weder Audio-Kanal noch Mikrofon", async () => {
     const { mount } = await import("./app");
     const root = document.createElement("div");
     document.body.append(root);
@@ -113,48 +122,90 @@ describe("adaptive Oberfläche", () => {
 
     const control = FakeSocket.all[0];
     expect(control.url).toContain("/control");
-    await act(async () => {
-      control.open();
-      control.emit({ type: "WELCOME", role: "owner", snapshot: { status: "idle", metrics: {}, logs: [], transcripts: [] } });
-    });
-    await flush();
-    expect(audio.instances).toHaveLength(1);
-    expect(FakeSocket.all).toHaveLength(2); // Steuer- + Audio-Kanal
+    await welcome(control);
+    // Sprache liegt im Command-Center-Fenster: das Dashboard baut keine AudioEngine und keinen Audio-Kanal auf.
+    expect(audio.instances).toHaveLength(0);
+    expect(FakeSocket.all).toHaveLength(1);
 
-    // 1) Start: Arbeitsbereich mit Navigation, keine große Blase; Gespräch über die Navigation erreichbar
+    // 1) Start: Arbeitsbereich mit Navigation; das Command Center ist ein Link, kein Abschnitt
     expect(stage().dataset.view).toBe("conversation");
     expect(stage().classList.contains("workspace")).toBe(true);
-    expect(document.querySelector(".view-frame")).toBeNull();
-    expect(document.querySelector(".voice-core")).toBeNull();
-    for (let i = 0; i < 200 && !document.querySelector(".cc-nav"); i++) await flush(); // Arbeitsbereich wird nachgeladen
+    await waitFor(".cc-nav");
     const nav = [...document.querySelectorAll(".cc-nav button")].map((b) => b.textContent?.trim());
-    expect(nav).toEqual(expect.arrayContaining(["Heute", "Command Center", "Freigaben", "Agenten", "Aufträge", "Kalender", "Skills und Automationen"]));
-    const center = [...document.querySelectorAll(".cc-nav button")].find((b) => b.textContent?.trim() === "Command Center") as HTMLButtonElement;
-    await act(async () => center.click());
-    expect(document.querySelector(".cc-center .cc-transport input")).not.toBeNull();
-    expect(document.querySelector(".cc-center .cc-now")?.textContent).toContain("Bereit");
+    expect(nav).toEqual(expect.arrayContaining(["Heute", "Freigaben", "Agenten / Jobs", "CRM", "Aufträge", "Kalender", "Skills und Automationen"]));
+    expect(nav).not.toContain("Command Center");
+    // Eingeklappt ist nur die Marke (Punkt + „Jarvis“) Teil der sichtbaren Schiene; Maus, Tastatur und Touch klappen aus
+    const rail = document.querySelector<HTMLElement>(".cc-nav")!;
+    const brand = rail.querySelector<HTMLButtonElement>("button.cc-brand")!;
+    const body = document.getElementById(brand.getAttribute("aria-controls")!)!;
+    expect(brand.textContent).toBe("Jarvis");
+    expect(brand.querySelector(".cc-logo")).not.toBeNull();
+    expect([...rail.children]).toEqual([brand, body]); // alles Übrige liegt im einklappbaren Teil
+    expect(rail.classList.contains("open")).toBe(false);
+    expect(brand.getAttribute("aria-expanded")).toBe("false");
+    const pointer = (type: string, pointerType: string, target: Element = rail) => act(async () => {
+      const event = new Event(type, { bubbles: type !== "pointerenter" && type !== "pointerleave" });
+      Object.defineProperty(event, "pointerType", { value: pointerType });
+      target.dispatchEvent(event);
+    });
+    // React hört für pointerenter/-leave auf pointerover/-out
+    await pointer("pointerover", "mouse");
+    expect(rail.classList.contains("open")).toBe(true);
+    expect(brand.getAttribute("aria-expanded")).toBe("true");
+    await act(async () => {
+      const out = new Event("pointerout", { bubbles: true });
+      Object.defineProperty(out, "pointerType", { value: "mouse" });
+      Object.defineProperty(out, "relatedTarget", { value: document.body });
+      rail.dispatchEvent(out);
+    });
+    expect(rail.classList.contains("open")).toBe(false);
+    // Touch: Antippen der Marke schaltet um (kein Hover nötig); ein Tipp daneben oder Esc schließt
+    await pointer("pointerdown", "touch", brand);
+    await act(async () => brand.click());
+    expect(rail.classList.contains("open")).toBe(true);
+    expect(brand.getAttribute("aria-label")).toBe("Jarvis – Navigation einklappen");
+    await act(async () => document.querySelector<HTMLButtonElement>(".cc-backdrop")!.click());
+    expect(rail.classList.contains("open")).toBe(false);
+    await act(async () => brand.click()); // Tastatur (Enter/Leertaste löst click ohne Zeiger aus)
+    expect(brand.getAttribute("aria-expanded")).toBe("true");
+    await act(async () => { rail.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(brand.getAttribute("aria-expanded")).toBe("false");
+    // Mausklick auf die Marke heftet nichts an: das Überfahren regelt Öffnen und Schließen
+    await pointer("pointerdown", "mouse", brand);
+    await act(async () => brand.click());
+    expect(rail.classList.contains("pinned")).toBe(false);
+    const link = document.querySelector<HTMLAnchorElement>(".cc-nav a.cc-open-cc")!;
+    expect(link.getAttribute("href")).toBe("?screen=command");
+    const open = vi.spyOn(window, "open").mockImplementation(() => ({ location: { href: "about:blank", search: "" }, focus() {} }) as unknown as Window);
+    await act(async () => link.click());
+    expect(open).toHaveBeenCalledWith("", "jarvis-command");
+    expect(document.querySelector(".cc-center")).toBeNull();
+    open.mockClear();
 
-    // 2) Smalltalk bleibt im Gespräch
+    // 2) Smalltalk ändert nichts
     await act(async () => user(control, "s0", "Wie geht es dir heute?"));
     expect(stage().dataset.view).toBe("conversation");
 
-    // 3) Nachrichten öffnen die Welt, Blase wird Präsenzpunkt
+    // 3) Nachrichten öffnen sich in derselben Schiene (keine eigene Bühne, kein Sprach-Dock)
     await act(async () => {
       user(control, "s1", "Zeig mir die Nachrichten");
       control.emit({ type: "TURN_START", stream_id: "s1" });
     });
     await flush();
     expect(stage().dataset.view).toBe("news");
-    expect(document.querySelector('[data-test="news"]')).not.toBeNull();
-    expect(document.querySelector(".voice-core.compact")).not.toBeNull();
+    await waitFor('[data-test="news"]');
+    expect(document.querySelector('.cc-work.lt-stage [data-test="news"]')).not.toBeNull();
+    expect(document.querySelector(".cc-nav")).not.toBeNull();
+    expect(document.querySelector(".voice-core")).toBeNull();
+    expect(document.querySelector(".dock")).toBeNull();
 
-    // 5) Zurück zum Gespräch
+    // 4) Zurück
     await act(async () => user(control, "s2", "Zurück zum Gespräch"));
     await flush();
     expect(stage().dataset.view).toBe("conversation");
     expect(document.querySelector(".view-frame")).toBeNull();
 
-    // 6) Abgebrochener Zug: verspätetes Werkzeug-/Transkript-Ereignis öffnet nichts
+    // 5) Abgebrochener Zug: verspätetes Werkzeug-/Transkript-Ereignis öffnet nichts
     await act(async () => {
       control.emit({ type: "TURN_START", stream_id: "s3" });
       control.emit({ type: "STREAM_STOPPED", stream_id: "s3", reason: "vad", ack_ms: 3 });
@@ -164,31 +215,83 @@ describe("adaptive Oberfläche", () => {
     await flush();
     expect(stage().dataset.view).toBe("conversation");
 
-    // 4) Eindeutige Aktienanfrage -> Chartansicht mit dem richtigen Wertpapier
+    // 6) Eindeutige Aktienanfrage -> Chartansicht mit dem richtigen Wertpapier
     await act(async () => user(control, "s4", "Wie hat sich Apple entwickelt?"));
     await flush();
     expect(stage().dataset.view).toBe("market");
+    await waitFor('[data-test="market"]');
     expect(document.querySelector('[data-test="market"]')?.textContent).toContain("apple");
 
-    // 7) Kameras gezielt über das Menü; zweiter Monitor öffnet sich dabei nicht
-    const open = vi.spyOn(window, "open").mockImplementation(() => null);
-    await act(async () => (document.querySelector(".dock-menu") as HTMLButtonElement).click());
-    const cams = [...document.querySelectorAll(".dock-popover button")].find((b) => b.textContent === "Kameras") as HTMLButtonElement;
+    // 7) Kameras über „Mehr“ in der Schiene; kein zweites Fenster
+    const cams = [...document.querySelectorAll(".cc-nav button")].find((b) => b.textContent?.trim() === "Kameras") as HTMLButtonElement;
     await act(async () => cams.click());
     await flush();
     expect(stage().dataset.view).toBe("cameras");
+    expect(cams.getAttribute("aria-current")).toBe("page");
     expect(open).not.toHaveBeenCalled();
-    // Manuelle Ansicht bleibt bei bloßem Werkzeug-Hinweis
-    await act(async () => {
-      control.emit({ type: "TURN_START", stream_id: "s5" });
-      control.emit({ type: "TOOL", stream_id: "s5", name: "nachrichten" });
-    });
-    expect(stage().dataset.view).toBe("cameras");
+    // Ein Abschnitt aus der Schiene schließt die „Mehr“-Ansicht
+    const today = [...document.querySelectorAll(".cc-nav button")].find((b) => b.textContent?.trim() === "Heute") as HTMLButtonElement;
+    await act(async () => today.click());
+    await flush();
+    expect(stage().dataset.view).toBe("conversation");
 
-    // Über alle Wechsel hinweg: keine neue Verbindung, keine neue AudioEngine, nichts geschlossen
+    // Über alle Wechsel hinweg: keine neue Verbindung, nichts geschlossen
+    expect(FakeSocket.all).toHaveLength(1);
+    expect(FakeSocket.all.every((socket) => socket.readyState === 1 || socket.readyState === 0)).toBe(true);
+    open.mockRestore();
+    await act(async () => root.remove());
+  });
+});
+
+describe("Command-Center-Fenster (?screen=command)", () => {
+  it("steuert in einem eigenen Raum, zeigt den Sprachkreis und öffnet bei „Zeig Berlin“ die Karte", async () => {
+    vi.resetModules();
+    FakeSocket.all.length = 0;
+    audio.instances.length = 0;
+    document.body.innerHTML = "";
+    window.history.replaceState(null, "", "/?screen=command");
+    vi.doMock("./world/MapboxWorld", () => ({ default: ({ query }: { query?: string }) => <div data-test="map">KARTE {query ?? ""}</div> }));
+    localStorage.setItem("jarvis-command-pending-v1", JSON.stringify({ id: "p1", text: "Briefing bitte", ts: Date.now() }));
+    const { mount } = await import("./app");
+    const root = document.createElement("div");
+    document.body.append(root);
+    await act(async () => mount(root));
+    await flush();
+
+    const control = FakeSocket.all[0];
+    expect(control.url).toContain("screen=main"); // eigener Raum, dort Hauptfenster = Besitzer
+    expect(localStorage.getItem("jarvis-room-command")).toBeTruthy();
+    expect(control.url).toContain(localStorage.getItem("jarvis-room-command")!);
+    await welcome(control);
+    expect(audio.instances).toHaveLength(1);
+    expect(FakeSocket.all).toHaveLength(2); // Steuer- + Audio-Kanal
+
+    await waitFor(".cc.cw .orb");
+    expect(document.querySelector(".cc-nav")).toBeNull(); // eigenes Fenster, nicht das Dashboard
+    expect(document.querySelector(".orb-wrap")!.getAttribute("data-state")).toBe("bereit");
+    expect(document.querySelector(".orb-mic")!.textContent).toBe("Mikrofon aus"); // kein offenes Mikrofon behauptet
+    expect(document.querySelector(".cc.cw")!.textContent).toContain("Master");
+    expect(document.querySelector(".cc-transport input")).not.toBeNull(); // Texteingabe als gleichwertiger Weg
+    // Der vom Dashboard übergebene Auftrag wurde genau einmal gesendet
+    const sent = control.sent.map((x) => JSON.parse(x)).filter((m) => m.type === "USER_TEXT");
+    expect(sent).toEqual([expect.objectContaining({ text: "Briefing bitte" })]);
+    expect(localStorage.getItem("jarvis-command-pending-v1")).toBeNull();
+
+    await act(async () => user(control, "b1", "Zeig Berlin"));
+    await waitFor('[data-test="map"]');
+    expect(document.querySelector(".cw-map h2")!.textContent).toBe("Berlin");
+    expect(document.querySelector('[data-test="map"]')!.textContent).toContain("Berlin");
+    expect(document.querySelector(".cc-understood")!.textContent).toContain("Karte öffnen · Berlin");
+
+    // Andere Ansichten gehören ins Dashboard: das Command Center bleibt beim Gespräch und sagt, wohin es ging
+    await act(async () => user(control, "b2", "Zeig mir die Nachrichten"));
+    await flush();
+    expect(document.querySelector('[data-test="news"]')).toBeNull();
+    expect(document.querySelector(".cc.cw")!.textContent).toContain("Nachrichten im Dashboard-Fenster geöffnet");
+
     expect(FakeSocket.all).toHaveLength(2);
     expect(audio.instances).toHaveLength(1);
     expect(audio.instances[0].close).not.toHaveBeenCalled();
-    expect(FakeSocket.all.every((socket) => socket.readyState === 1 || socket.readyState === 0)).toBe(true);
+    window.history.replaceState(null, "", "/");
   });
 });

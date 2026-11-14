@@ -62,6 +62,18 @@ const ASKING = words("welche|was|gibt es|verfügbar|zeig|liste");
 const WORLD = words("weltkarte|weltansicht|world[ -]?view|globus|landkarte|karte");
 const FLY = /(?:^|\s)(?:flieg\p{L}*|bring mich|zoom\p{L}*)\s+(?:mich\s+)?(?:nach|zu|zur|zum|über|ueber|auf|in)\s+(.+)$/iu;
 const ON_MAP = /(?:zeig\p{L}*\s+(?:mir\s+)?|wo (?:ist|liegt)\s+)(.+?)\s+(?:auf|in) der (?:welt)?karte/iu;
+/** Ortsbefehl ohne Zusatz: „Zeig Berlin“, „Zeig mir bitte München“. Nur bekannte Orte und nur der ganze Teilsatz –
+ *  „Zeig Nachrichten aus Berlin“ oder „Zeig mir den Kurs von …“ bleiben bei Nachrichten bzw. Markt. */
+const CITIES = "berlin|hamburg|münchen|muenchen|köln|koeln|frankfurt|stuttgart|düsseldorf|duesseldorf|leipzig|dresden|hannover|nürnberg|nuernberg|bremen|essen|dortmund|wien|zürich|zuerich|paris|london|new york|tokio|tokyo|dubai|singapur|rom|madrid|amsterdam";
+const SHOW_PLACE = new RegExp(`^(?:zeig\\p{L}*|öffne|oeffne)\\s+(?:mir\\s+)?(?:bitte\\s+)?(?:die stadt\\s+)?(${CITIES})\\s*$`, "iu");
+/** Ägyptisch: „وريني برلين“ / „فرجني القاهرة“ / „افتح خريطة دبي“ -> Karte. Nur bekannte Städte (arabisch -> Kartenname). */
+const ORTE_AR: Record<string, string> = {
+  "برلين": "Berlin", "القاهرة": "Kairo", "القاهره": "Kairo", "الاسكندرية": "Alexandria", "الإسكندرية": "Alexandria",
+  "اسكندرية": "Alexandria", "ميونخ": "München", "هامبورج": "Hamburg", "فرانكفورت": "Frankfurt", "كولونيا": "Köln",
+  "دبي": "Dubai", "لندن": "London", "باريس": "Paris", "نيويورك": "New York", "طوكيو": "Tokio", "روما": "Rom",
+  "شتوتجارت": "Stuttgart", "الجونة": "El Gouna", "شرم الشيخ": "Sharm El-Sheikh", "الغردقة": "Hurghada", "الأقصر": "Luxor", "أسوان": "Assuan",
+};
+const SHOW_PLACE_AR = /^(?:وريني|ورّيني|ورينى|فرجني|فرّجني|اعرض(?:لي)?|افتح(?:لي)?)\s+(?:لي\s+|خريطة\s+|خريطه\s+)?(.+?)[\s.!؟?]*$/u;
 const COMMAND = words(
   "kommandozentrale|command center|kalender\\p{L}*|agenda|terminübersicht|terminuebersicht|aufträge|auftraege|auftragsboard|kanban|freigaben|freigabe\\p{L}*",
 );
@@ -175,5 +187,10 @@ function classifyClause(
       ...(place ? { query: place } : {}),
     };
   }
+  // Niedrigste Priorität: erst wenn kein Nachrichten-, Markt-, Kamera- oder Bereichsbefehl passt.
+  const showPlaceAr = original.trim().match(SHOW_PLACE_AR);
+  if (showPlaceAr && ORTE_AR[showPlaceAr[1].trim()]) return { kind: "open", view: "world", explicit: true, query: ORTE_AR[showPlaceAr[1].trim()] };
+  const showPlace = original.trim().match(SHOW_PLACE);
+  if (showPlace) return { kind: "open", view: "world", explicit: true, query: showPlace[1].trim() };
   return { kind: "none" };
 }

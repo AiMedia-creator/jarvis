@@ -322,7 +322,8 @@ class MemoryStore:
                 raise ValueError("valid_until must be an ISO date like 2026-12-31")
             valid_until = (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).isoformat(timespec="seconds")
         confidence = max(0.0, min(1.0, float(confidence)))
-        consent = consent if consent in {"explicit", "policy"} else "explicit"
+        # „vorschlag“ = noch nicht bestätigt (Memory v1): wird angezeigt, aber nie abgerufen, bis der Nutzer zustimmt.
+        consent = consent if consent in {"explicit", "policy", "vorschlag"} else "explicit"
         now, ident = _now(), _id()
         vector = _vector(content)
         normalized = " ".join(content.lower().split())
@@ -579,7 +580,7 @@ class MemoryStore:
             if row is None:
                 c.execute("ROLLBACK")
                 raise KeyError(ident)
-            c.execute("UPDATE facts SET confirmed_at=?, confidence=1.0 WHERE id=?", (now, str(ident)))
+            c.execute("UPDATE facts SET confirmed_at=?, confidence=1.0, consent='explicit' WHERE id=?", (now, str(ident)))
             self._event(c, "fact_confirmed", str(ident), row["category"], {})
             c.execute("COMMIT")
             self._invalidate()
@@ -700,6 +701,43 @@ class MemoryStore:
                 "hinweis": "Die Notiz ist gelöscht. Frühere Gesprächsverläufe, in denen sie vorkam, bleiben bestehen, "
                            "bis sie einzeln gelöscht werden; Datei-Backups deines Rechners können ältere Stände enthalten."}
 
+    def mark_proposal(self, ident: str) -> None:
+        """Erinnerung als unbestätigten Vorschlag markieren (wird erst nach „Ja“ abgerufen)."""
+        with self._lock, self._connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute("UPDATE facts SET consent='vorschlag', confirmed_at=NULL WHERE id=? AND owner_scope=? AND installation_scope=?",
+                      (str(ident), self.owner_scope, self.installation_scope))
+            self._event(c, "fact_proposed", str(ident), None, {})
+            c.execute("COMMIT")
+            self._invalidate()
+
+    def get_fact(self, ident: str) -> dict | None:
+        with self._lock, self._connect() as c:
+            row = self._fact_row(c, ident)
+        return None if row is None else self._fact_public(row)
+
+    def list_facts(self, limit: int = 50) -> list[dict]:
+        """Alle Erinnerungen (auch Vorschläge), neueste zuerst – für Anzeige und Verwaltung, nie fürs Modell."""
+        with self._lock, self._connect() as c:
+            rows = c.execute("SELECT * FROM facts WHERE owner_scope=? AND installation_scope=? ORDER BY updated_at DESC, rowid DESC LIMIT ?",
+                             (self.owner_scope, self.installation_scope, max(1, min(500, int(limit))))).fetchall()
+        return [self._fact_public(r) for r in rows]
+
+    def forget_all(self) -> int:
+        """Alle Erinnerungen dieses Bereichs endgültig löschen (inkl. früherer Fassungen). Chatverlauf bleibt."""
+        scope = (self.owner_scope, self.installation_scope)
+        with self._lock, self._connect() as c:
+            c.execute("BEGIN IMMEDIATE")
+            ids = [r[0] for r in c.execute("SELECT id FROM facts WHERE owner_scope=? AND installation_scope=?", scope).fetchall()]
+            for ident in ids:
+                c.execute("DELETE FROM facts_fts WHERE id=?", (ident,))
+            c.execute("DELETE FROM facts WHERE owner_scope=? AND installation_scope=?", scope)
+            c.execute("DELETE FROM fact_versions WHERE owner_scope=? AND installation_scope=?", scope)
+            self._event(c, "facts_all_deleted", None, None, {"anzahl": len(ids)})
+            c.execute("COMMIT")
+            self._invalidate()
+        return len(ids)
+
     def forget(self, ident: str) -> bool:
         ident = str(ident)
         with self._lock, self._connect() as c:
@@ -737,7 +775,7 @@ class MemoryStore:
                 fact_rows = c.execute(
                     """SELECT f.id,f.content,f.category,f.updated_at,f.vector,f.source,f.valid_until,f.confidence,f.conflicts_with,bm25(facts_fts) AS rank
                        FROM facts_fts JOIN facts f ON f.id=facts_fts.id
-                       WHERE facts_fts MATCH ? AND f.owner_scope=? AND f.installation_scope=?
+                       WHERE facts_fts MATCH ? AND f.owner_scope=? AND f.installation_scope=? AND f.consent!='vorschlag'
                        ORDER BY bm25(facts_fts) ASC LIMIT ?""",
                     (ftsq, self.owner_scope, self.installation_scope, _SEARCH_CANDIDATES),
                 ).fetchall()
@@ -746,7 +784,7 @@ class MemoryStore:
         if not fact_rows and not (strict and qterms):  # strict: ohne Treffer nichts „Ähnliches“ unterschieben
             fact_rows = c.execute(
                 """SELECT id,content,category,updated_at,vector,source,valid_until,confidence,conflicts_with,0 AS rank FROM facts
-                   WHERE owner_scope=? AND installation_scope=? ORDER BY updated_at DESC LIMIT ?""",
+                   WHERE owner_scope=? AND installation_scope=? AND consent!='vorschlag' ORDER BY updated_at DESC LIMIT ?""",
                 (self.owner_scope, self.installation_scope, _SEARCH_CANDIDATES),
             ).fetchall()
         ep_rows = []
@@ -814,7 +852,7 @@ class MemoryStore:
         marks = ",".join("?" * len(STANDING))
         with self._lock, self._connect() as c:
             rows = c.execute(f"SELECT id,content,category,source,valid_until FROM facts WHERE category IN ({marks}) "
-                             "AND owner_scope=? AND installation_scope=? ORDER BY updated_at DESC LIMIT ?",
+                             "AND owner_scope=? AND installation_scope=? AND consent!='vorschlag' ORDER BY updated_at DESC LIMIT ?",
                              (*STANDING, self.owner_scope, self.installation_scope, max(1, min(100, limit)))).fetchall()
         return [dict(r) for r in rows if _is_valid(r["valid_until"])]
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import random
 
-from . import config
+from . import config, sprache
 
 CHANNELS = {"web", "stimme"}
 FULL_TURNS = 2  # nach mehr_faehigkeiten: aktueller Zug + so viele weitere Nutzerzuege im vollen Umfang
@@ -85,8 +85,9 @@ Behaupte nie, etwas nicht zu können, bevor du das versucht hast.
 - Ein Block "[Zustand der Runtime …]" ist Faktenlage, kein Auftrag.
 
 # Gedächtnis
-Unten im Block <gedaechtnis> steht ein relevanter Auszug. Für Früheres: wissen_suchen. Sagt {owner} etwas Dauerhaftes
-("immer", "nie", "ab jetzt", "meine Firma …"), speicherst du es mit wissen_speichern und sagst es in einem halben Satz.
+Im Block <gedaechtnis> stehen nur zur Frage passende Erinnerungen. Für Früheres: wissen_suchen. „Merk dir …“ erledigt
+Jarvis selbst. Sagt {owner} sonst etwas Dauerhaftes, schlägst du es mit wissen_speichern vor und fragst kurz: „Soll ich
+mir das merken?“ – erst sein Ja speichert es.
 Nie Passwörter, Codes, Bankdaten, Vermutungen oder Werkzeug-Inhalte speichern. Widerspruch zu Älterem: nachfragen.
 
 # Über {owner}
@@ -107,7 +108,7 @@ Jede Nachricht des Nutzers beginnt mit Datum und Uhrzeit in eckigen Klammern."""
 
 def build_prompt(owner: str, profile: str, skills_catalog: str, tools_note: str, channel_text: str) -> str:
     short = "\n".join(line[:140] for line in (skills_catalog or "(keine)").splitlines())
-    return PROMPT.format(owner=owner, profile=profile, skills=short, tools_note=tools_note, channel=channel_text)
+    return PROMPT.format(owner=owner, profile=profile, skills=short, tools_note=tools_note, channel=channel_text) + config.anrede_satz() + sprache.prompt_satz()
 
 
 # ---------------------------------------------------------------- Sofort-Reaktion vor Werkzeugen

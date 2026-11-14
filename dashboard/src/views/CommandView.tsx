@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { api, ApiError, type Approval, type Automations, type CalendarData, type CalendarEvent, type Column, type Job, type Order, type OrderStatus } from "../command/api";
 import { boardReducer, dayKey, initialBoard, timeRange } from "../command/model";
 import { KanbanPanel } from "../command/KanbanPanel";
@@ -7,19 +7,21 @@ import { ContentPanel } from "../command/ContentPanel";
 import { ApprovalsPanel } from "../command/ApprovalsPanel";
 import { AgendaPanel } from "../command/AgendaPanel";
 import { AutomationsPanel } from "../command/AutomationPanels";
-import { AgentCenter } from "../command/AgentCenter";
+import { AgentCenter, isJob } from "../command/AgentCenter";
 import { TodayView } from "../command/TodayView";
 import { buildQueue, buildSuggestions, type QueueItem } from "../command/today";
 import { MemoryCenter } from "../command/MemoryCenter";
 import { ConnectionsPanel } from "../command/ConnectionsPanel";
 import { SkillPlatform } from "../command/SkillPlatform";
 import { EventDetail } from "../command/EventDetail";
-import { CommandCenter } from "../command/CommandCenter";
-import { Telemetry } from "../command/telemetry";
+import { CrmPanel } from "../command/CrmPanel";
+import { SkillsOverview } from "../command/SkillsOverview";
+import { COMMAND_URL, COMMAND_WINDOW, openCommandCenter } from "../command/commandWindow";
+import type { Telemetry } from "../command/telemetry";
 import { LiveCamera, useBusEvents, type CameraInfo } from "../command/LiveCamera";
 import type { RealtimeSession, SaveState } from "../command/realtime";
 import { DEFAULT_PREFS, type VoicePrefs } from "../command/SettingsDialog";
-import type { AgentCenterData, AgentRole, CallOverview, Connections, ContentOverview, CapabilityRun, Platform, Settings } from "../command/api";
+import type { AgentCenterData, AgentRole, CallOverview, Connections, ContentOverview, CapabilityRun, Lead, Platform, Settings } from "../command/api";
 import { Icon } from "../command/icons";
 import type { ContentView } from "../view/intent";
 import type { AudioEngine } from "../audio";
@@ -33,18 +35,18 @@ export type CommandSection =
   | "uebersicht" | "auftraege" | "kalender" | "termin" | "anrufe" | "content" | "agenten" | "automatisierungen" | "gedaechtnis"
   | "verbindungen" | "welt" | "gespraech" | "freigaben";
 type NavItem = { id: CommandSection; label: string; icon: string };
-/** Navigation folgt dem Kernablauf: erst Lage und Übergabe, dann die Arbeitsbereiche, zuletzt das System. */
+/** Navigation: Lage und Entscheidungen, dann Vertrieb (CRM zuerst), zuletzt das System.
+ *  Das Command Center ist kein Abschnitt mehr: es öffnet sich über einen eigenen Link in einem eigenen Fenster. */
 const NAV: { title: string; items: NavItem[] }[] = [
   { title: "Jarvis", items: [
     { id: "uebersicht", label: "Heute", icon: "overview" },
-    { id: "gespraech", label: "Command Center", icon: "chat" },
     { id: "freigaben", label: "Freigaben", icon: "approvals" },
-    { id: "agenten", label: "Agenten", icon: "agents" },
+    { id: "agenten", label: "Agenten / Jobs", icon: "agents" },
   ] },
-  { title: "Arbeit", items: [
-    { id: "auftraege", label: "Aufträge", icon: "orders" },
+  { title: "Vertrieb", items: [
+    { id: "anrufe", label: "CRM", icon: "phone" },
     { id: "kalender", label: "Kalender", icon: "calendar" },
-    { id: "anrufe", label: "Vertrieb", icon: "phone" },
+    { id: "auftraege", label: "Aufträge", icon: "orders" },
     { id: "content", label: "Content", icon: "news" },
   ] },
   { title: "System", items: [
@@ -53,10 +55,10 @@ const NAV: { title: string; items: NavItem[] }[] = [
     { id: "verbindungen", label: "Verbindungen", icon: "link" },
   ] },
 ];
-/** Mobile Leiste: höchstens fünf Ziele, der Rest liegt im Menü. */
-const TABS: NavItem[] = NAV[0].items;
+/** Mobile Leiste: höchstens fünf Ziele (vier + Menü), der Rest liegt im Menü. */
+const TABS: NavItem[] = [...NAV[0].items, NAV[1].items[0]];
 const TITLES: Record<CommandSection, string> = {
-  uebersicht: "Heute", auftraege: "Aufträge", kalender: "Kalender", termin: "Termin", anrufe: "Vertrieb", content: "Content", agenten: "Agenten",
+  uebersicht: "Heute", auftraege: "Aufträge", kalender: "Kalender", termin: "Termin", anrufe: "CRM", content: "Content", agenten: "Agenten / Jobs",
   automatisierungen: "Skills und Automationen", gedaechtnis: "Gedächtnis", verbindungen: "Verbindungen und Einrichtung",
   welt: "World View", gespraech: "Command Center", freigaben: "Freigaben",
 };
@@ -75,7 +77,7 @@ const DEFAULT_COLUMNS: Column[] = [
 const COLUMN_TITLES: Partial<Record<OrderStatus, string>> = { freigabe: "Prüfung" };
 
 const ALIASES: [RegExp, CommandSection][] = [
-  [/auftr|kanban|board/, "auftraege"], [/kalender|termin/, "kalender"], [/agenda/, "kalender"], [/anruf|telefon|vertrieb|lead|pipeline|follow/, "anrufe"], [/content|video|hook|tiktok|reel|shorts/, "content"], [/agent|job/, "agenten"],
+  [/auftr|kanban|board/, "auftraege"], [/kalender|termin/, "kalender"], [/agenda/, "kalender"], [/anruf|telefon|vertrieb|lead|pipeline|follow|crm|cold/, "anrufe"], [/content|video|hook|tiktok|reel|shorts/, "content"], [/agent|job/, "agenten"],
   [/automat|ablauf|abläuf|workflow|n8n|skill/, "automatisierungen"], [/ged[aä]chtnis|erinner|memory/, "gedaechtnis"],
   [/verbind|einricht|integration|dienst/, "verbindungen"], [/welt|karte|world|map/, "welt"],
   [/gespr|chat|coach|command center|sprach/, "gespraech"], [/freigab/, "freigaben"], [/übersicht|uebersicht|heute|start|home/, "uebersicht"],
@@ -117,24 +119,29 @@ export type WorkspaceProps = {
   onReset?: () => void;
   /** Raum = Gespräch; nötig für Dateianhänge. */
   room?: string;
+  /** Memory v1: je Antwort (stream_id) die mitgeschickten Erinnerungen. */
+  memoryUse?: Record<string, { id: string; inhalt: string }[]>;
+  /** Geöffnete „Mehr“-Ansicht (Nachrichten, Märkte, Kameras, Systemprotokoll) – läuft in derselben Schiene. */
+  more?: { id: ContentView; node: ReactNode } | null;
 };
 
 export default function CommandView({
-  query, section: forced, worldQuery, role, connected, onAsk, onView,
-  transcripts = [], audio = null, micOn = false, onMicChange = () => undefined, onLog = () => undefined, onStop = () => undefined,
-  telemetry: givenTelemetry, muted = false, onMutedChange = () => undefined,
-  voiceMode = "studio", transcriptSave, onRetryTranscripts = () => undefined, onStartRealtime = async () => undefined, onStopRealtime = async () => undefined, getRealtime = () => null,
-  voicePrefs = DEFAULT_PREFS, onVoicePrefs = () => undefined, onReset = () => undefined, room,
+  query, section: forced, worldQuery, role, connected, onView, more = null,
+  voiceMode = "studio", transcriptSave, onRetryTranscripts = () => undefined,
 }: WorkspaceProps) {
-  const [ownTelemetry] = useState(() => new Telemetry());
-  const telemetry = givenTelemetry ?? ownTelemetry;
   const [section, setSection] = useState<CommandSection>(() => forced ?? sectionFromQuery(query));
   useEffect(() => { if (forced) setSection(forced); }, [forced, worldQuery]);
   useEffect(() => { if (query) setSection(sectionFromQuery(query)); }, [query]);
+  // Navigation: eingeklappt nur Punkt und „Jarvis“. Sie öffnet sich, solange die Maus darüber ist, solange der
+  // Tastaturfokus darin liegt, oder nach Antippen/Betätigen der Marke (navOpen, bleibt bis zur Auswahl oder Esc).
   const [navOpen, setNavOpen] = useState(false);
+  const [navHover, setNavHover] = useState(false);
+  const [navKeys, setNavKeys] = useState(false);
+  const lastPointer = useRef("");
+  const navExpanded = navOpen || navHover || navKeys;
+  const closeNav = useCallback(() => { setNavOpen(false); setNavKeys(false); }, []);
   const [moreOpen, setMoreOpen] = useState(false);
   const [ready, setReady] = useState(false);
-  const [focusComposer, setFocusComposer] = useState(0);
   const [calTab, setCalTab] = useState<"monat" | "liste">("monat");
   const [search, setSearch] = useState("");
   const [board, dispatch] = useReducer(boardReducer, initialBoard);
@@ -161,6 +168,8 @@ export default function CommandView({
   const [agentData, setAgentData] = useState<AgentCenterData | null>(null);
   const [agentError, setAgentError] = useState<string | null>(null);
   const [focusJob, setFocusJob] = useState<string | null>(null);
+  const [dueLeads, setDueLeads] = useState<Lead[] | null>(null);
+  const [focusLead, setFocusLead] = useState<string | null>(null);
   const [connections, setConnections] = useState<Connections | null>(null);
   const [connError, setConnError] = useState<string | null>(null);
   const [connBusy, setConnBusy] = useState(false);
@@ -168,8 +177,17 @@ export default function CommandView({
   useEffect(() => () => void (alive.current = false), []);
 
   const go = useCallback((next: CommandSection) => {
+    setNavKeys(false);
     setSection(next);
     setNavOpen(false);
+    if (more) onView("conversation"); // „Mehr“-Ansicht schließen, sobald ein Abschnitt gewählt wird
+  }, [more, onView]);
+  /** Command Center in eigenem Fenster öffnen; mit Text wird der Auftrag dorthin übergeben. */
+  const [blocked, setBlocked] = useState(false);
+  const openCenter = useCallback((text?: string) => {
+    const opened = openCommandCenter(text);
+    setBlocked(!opened);
+    if (opened && text) setNotice("Auftrag an das Command Center übergeben.");
   }, []);
   const openEvent = useCallback((e: CalendarEvent) => {
     setEvent(e);
@@ -203,6 +221,12 @@ export default function CommandView({
     }
   }, [callDays]);
   useEffect(() => { if (section === "anrufe" || section === "uebersicht") void loadCalls(); }, [section, loadCalls]);
+  // Fällige Follow-ups für „Heute“ kommen vom Lead selbst (aktueller Stand), nicht aus alten Anruf-Zeilen.
+  useEffect(() => {
+    if (section !== "uebersicht") return;
+    api.leads("follow_up").then((d) => { if (alive.current && Array.isArray(d?.leads)) setDueLeads(d.leads); })
+      .catch(() => { /* älterer Server ohne /api/leads: „Heute“ bleibt ohne CRM-Follow-ups */ });
+  }, [section]);
   const loadContent = useCallback(async () => {
     try {
       const data = await api.content();
@@ -416,22 +440,18 @@ export default function CommandView({
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        go("gespraech");
-        setFocusComposer((n) => n + 1);
+        openCenter();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [go]);
-  const ask = useCallback((text: string) => {
-    onAsk(text);
-    go("gespraech");
-  }, [onAsk, go]);
+  }, [openCenter]);
+  const ask = useCallback((text: string) => openCenter(text), [openCenter]);
 
   const openApprovals = approvals.filter((a) => a.status === "WAITING_FOR_APPROVAL");
   const tz = calendar?.zeitzone || "Europe/Berlin";
   const today = dayKey(new Date(), tz);
-  const runningJobs = (agentData?.jobs ?? []).filter((j) => j.status === "RUNNING" || j.status === "WAITING_FOR_APPROVAL");
+  const runningJobs = (agentData?.jobs ?? []).filter((j) => isJob(j) && (j.status === "RUNNING" || j.status === "WAITING_FOR_APPROVAL"));
   const next = (calendar?.termine ?? []).find((e) => e.status !== "cancelled" && e.beginn && new Date(e.beginn).getTime() > Date.now());
   const calendarOk = calendar?.status === "ok";
   const webcams = (automations?.integrationen.find((i) => i.id === "windy")?.status ?? null) as "bereit" | "nicht_eingerichtet" | null;
@@ -439,8 +459,8 @@ export default function CommandView({
 
   // „Heute“: eine priorisierte Liste aus allen Quellen; nicht erreichbare Quellen werden benannt statt verschwiegen.
   const queue = useMemo(() => buildQueue({
-    approvals, orders: board.orders, today, calls, content: contentData, calendar, automations, connections, agents: agentData,
-  }), [approvals, board.orders, today, calls, contentData, calendar, automations, connections, agentData]);
+    approvals, orders: board.orders, today, calls, leads: dueLeads, content: contentData, calendar, automations, connections, agents: agentData,
+  }), [approvals, board.orders, today, calls, dueLeads, contentData, calendar, automations, connections, agentData]);
   const nextEvent = next ? { titel: next.titel, zeit: `${dayKey(new Date(next.beginn!), tz) === today ? "heute" : new Date(next.beginn!).toLocaleDateString("de-DE", { timeZone: tz, weekday: "long" })} ${timeRange(next, tz).split("–")[0]}` } : null;
   const suggestions = useMemo(() => buildSuggestions({ orders: board.orders, today, calls, nextEvent }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -452,6 +472,7 @@ export default function CommandView({
   const openItem = (item: QueueItem) => {
     if (item.orderId) return void openOrder(item.orderId);
     if (item.jobId) return openJob(item.jobId);
+    if (item.leadId) setFocusLead(item.leadId);
     go(item.target);
   };
 
@@ -460,7 +481,7 @@ export default function CommandView({
     : id === "agenten" && runningJobs.length > 0 ? <span className="cc-badge live" aria-label={`${runningJobs.length} aktiv`}>{runningJobs.length}</span>
     : id === "verbindungen" && needsYou.length > 0 ? <span className="cc-badge" aria-label={`${needsYou.length} brauchen dich`}>{needsYou.length}</span>
     : null;
-  const isCurrent = (id: CommandSection) => section === id || (id === "kalender" && section === "termin");
+  const isCurrent = (id: CommandSection) => !more && (section === id || (id === "kalender" && section === "termin"));
   const navButton = (s: NavItem) => (
     <button key={s.id} type="button" className={isCurrent(s.id) ? "active" : ""}
       aria-current={isCurrent(s.id) ? "page" : undefined} onClick={() => go(s.id)}>
@@ -468,13 +489,31 @@ export default function CommandView({
       {badge(s.id)}
     </button>
   );
-  const moreVisible = moreOpen || section === "welt";
-  const searchable = ["auftraege", "kalender", "freigaben"].includes(section);
+  const moreVisible = moreOpen || section === "welt" || !!more;
+  const searchable = !more && ["auftraege", "kalender", "freigaben"].includes(section);
+  const moreLabel = more ? MORE.find((m) => m.id === more.id)?.label ?? "Mehr" : null;
+  const dark = !!more || section === "welt";
 
   return (
-    <section className="cc" aria-label="Jarvis Arbeitsbereich" data-section={section}>
-      <nav className={`cc-nav ${navOpen ? "open" : ""}`} aria-label="Hauptnavigation">
-        <div className="cc-brand"><span className="cc-logo" aria-hidden="true" /><span>Jarvis</span></div>
+    <section className="cc" aria-label="Jarvis Arbeitsbereich" data-section={more ? more.id : section}>
+      <nav className={`cc-nav ${navExpanded ? "open" : ""} ${navOpen ? "pinned" : ""}`} aria-label="Hauptnavigation"
+        onPointerEnter={(e) => { if (e.pointerType === "mouse") setNavHover(true); }}
+        onPointerLeave={(e) => { if (e.pointerType === "mouse") setNavHover(false); }}
+        onFocus={(e) => { if ((e.target as HTMLElement).matches?.(":focus-visible")) setNavKeys(true); }}
+        onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setNavKeys(false); }}
+        onKeyDown={(e) => { if (e.key === "Escape" && navExpanded) { e.stopPropagation(); closeNav(); setNavHover(false); (document.activeElement as HTMLElement | null)?.blur?.(); } }}>
+        <button type="button" className="cc-brand" aria-expanded={navExpanded} aria-controls="cc-nav-inhalt"
+          aria-label={navExpanded ? "Jarvis – Navigation einklappen" : "Jarvis – Navigation ausklappen"}
+          onPointerDown={(e) => { lastPointer.current = e.pointerType; }}
+          onClick={() => {
+            // Maus: das Überfahren öffnet und schließt bereits. Touch, Stift und Tastatur schalten um.
+            if (lastPointer.current === "mouse") { lastPointer.current = ""; return; }
+            lastPointer.current = "";
+            if (navExpanded) closeNav(); else setNavOpen(true);
+          }}>
+          <span className="cc-logo" aria-hidden="true" /><span>Jarvis</span>
+        </button>
+        <div id="cc-nav-inhalt" className="cc-nav-body">
         {NAV.map((group) => (
           <div key={group.title} className="cc-nav-group" role="group" aria-label={group.title}>
             <div className="cc-nav-more">{group.title}</div>
@@ -486,22 +525,29 @@ export default function CommandView({
             <span>Mehr</span><span aria-hidden="true">{moreVisible ? "–" : "+"}</span>
           </button>
           {moreVisible && MORE.map((m) => (
-            <button key={m.id} type="button" className={m.id === "welt" && section === "welt" ? "active" : ""}
-              onClick={() => { if (m.id === "welt") go("welt"); else { setNavOpen(false); onView(m.id); } }}><Icon name={m.icon} /> {m.label}</button>
+            <button key={m.id} type="button" className={(m.id === "welt" ? !more && section === "welt" : more?.id === m.id) ? "active" : ""}
+              aria-current={(m.id === "welt" ? !more && section === "welt" : more?.id === m.id) ? "page" : undefined}
+              onClick={() => { if (m.id === "welt") go("welt"); else { closeNav(); onView(m.id); } }}><Icon name={m.icon} /> {m.label}</button>
           ))}
         </div>
+        <a className="cc-open-cc" href={COMMAND_URL} target={COMMAND_WINDOW} rel="opener"
+          onClick={(e) => { e.preventDefault(); closeNav(); openCenter(); }}>
+          <span>Command Center <Icon name="external" /></span><small>eigenes Fenster</small>
+        </a>
         <div className={`cc-nav-foot ${connected ? "ok" : "warn"}`} role="status">
-          <i aria-hidden="true" /><span>{connected ? "Mit Jarvis verbunden" : "Keine Verbindung zu Jarvis"}</span>
+          <i aria-hidden="true" /><span>{connected ? "Verbunden" : "Keine Verbindung"}</span>
+        </div>
         </div>
       </nav>
 
-      {navOpen && <button type="button" className="cc-backdrop" aria-label="Navigation schließen" onClick={() => setNavOpen(false)} />}
+      {navOpen && <button type="button" className="cc-backdrop" aria-label="Navigation schließen" onClick={closeNav} />}
       <div className="cc-main">
         <header className="cc-top">
-          <button type="button" className="cc-btn small cc-menu-btn" aria-label="Navigation öffnen" aria-expanded={navOpen} onClick={() => setNavOpen((v) => !v)}>
-            <Icon name="menu" />
+          <button type="button" className="cc-menu-btn" aria-label={navOpen ? "Jarvis – Navigation schließen" : "Jarvis – Navigation öffnen"}
+            aria-expanded={navOpen} aria-controls="cc-nav-inhalt" onClick={() => setNavOpen((v) => !v)}>
+            <span className="cc-logo" aria-hidden="true" /><span>Jarvis</span>
           </button>
-          <h1>{TITLES[section]}</h1>
+          <h1>{moreLabel ?? TITLES[section]}</h1>
           {searchable && (
             <input type="search" className="cc-search" placeholder="Suchen in Aufträgen, Terminen, Freigaben …" aria-label="Suchen"
               value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -519,25 +565,28 @@ export default function CommandView({
             {openApprovals.length > 0 && section !== "freigaben" && section !== "uebersicht" && (
               <button type="button" className="cc-pill attn" onClick={() => go("freigaben")}>{openApprovals.length} {openApprovals.length === 1 ? "Freigabe wartet" : "Freigaben warten"}</button>
             )}
-            {section !== "gespraech" && canEdit && (
-              <button type="button" className="cc-pill cc-kbd-hint" onClick={() => { go("gespraech"); setFocusComposer((n) => n + 1); }}
-                aria-label="Command Center öffnen und schreiben">Jarvis fragen <kbd>⌘K</kbd></button>
-            )}
+            <button type="button" className="cc-pill cc-kbd-hint" onClick={() => openCenter()}
+              aria-label="Command Center in eigenem Fenster öffnen">Command Center <kbd>⌘K</kbd></button>
           </div>
         </header>
         {offline && <div className="cc-error" role="status">{offline} Angezeigt wird der letzte bekannte Stand.</div>}
+        {blocked && (
+          <div className="cc-error" role="alert">Der Browser hat das Command-Center-Fenster blockiert.{" "}
+            <a className="cc-link" href={COMMAND_URL} target={COMMAND_WINDOW} onClick={() => setBlocked(false)}>Hier klicken, um es zu öffnen</a>. Dein Auftrag wartet dort zwei Minuten.</div>
+        )}
         {notice && (
           <div className="cc-notice" role="status">{notice} <button type="button" className="cc-link" onClick={() => setNotice(null)}>OK</button></div>
         )}
 
-        <div className={`cc-work ${section === "welt" || section === "gespraech" ? "flush" : ""}`} key={section}>
+        <div className={`cc-work ${dark ? "flush lt-stage" : ""}`} key={more ? more.id : section}>
+          {more ? more.node : <>
           {section === "uebersicht" && (
             <TodayView
               dateLabel={new Date().toLocaleDateString("de-DE", { timeZone: tz, weekday: "long", day: "numeric", month: "long", year: "numeric" })}
               queue={queue} ready={ready} unchecked={unchecked} suggestions={suggestions}
               agents={agentData} agentError={agentError} calendar={calendar} nextEvent={nextEvent}
               canAct={canEdit} connected={connected} onAsk={ask} onOpen={openItem} onOpenJob={openJob} onOpenEvent={openEvent}
-              onTalk={() => go("gespraech")} />
+              onTalk={() => openCenter()} />
           )}
           {section === "auftraege" && (
             <div style={{ display: "grid", gridTemplateColumns: selected ? "minmax(0,1fr) 300px" : "1fr", gap: 16 }}>
@@ -592,21 +641,19 @@ export default function CommandView({
             : <p className="cc-empty">Kein Termin ausgewählt. <button type="button" className="cc-link" onClick={() => go("kalender")}>Zum Kalender</button></p>)}
           {section === "anrufe" && (
             <>
-              <div className="cc-page-head"><div><h2>Vertrieb</h2><p>Vom Lead bis zur nächsten Umsatzaktion. Zahlen nur aus erfassten Gesprächen; ins CRM geht nichts ohne deine Freigabe.</p></div>
-                <button type="button" className="cc-link" onClick={() => void loadCalls()}>Aktualisieren</button></div>
-              <CallsPanel data={calls} error={callsError} canAsk={canEdit} onAsk={ask} days={callDays} onDays={(d) => { setCallDays(d); void loadCalls(d); }} onStartSkill={startSkill} />
+              <CrmPanel canEdit={canEdit} focusLead={focusLead} onOpenApprovals={() => go("freigaben")}
+                auswertung={<CallsPanel data={calls} error={callsError} canAsk={canEdit} onAsk={ask} days={callDays} onDays={(d) => { setCallDays(d); void loadCalls(d); }} onStartSkill={startSkill} />} />
             </>
           )}
           {section === "content" && (
             <>
-              <div className="cc-page-head"><div><h2>Content</h2><p>Von der Idee bis zur Auswertung. Nichts wird automatisch veröffentlicht.</p></div>
+              <div className="cc-page-head slim"><span className="cc-tag">Nichts wird automatisch veröffentlicht</span>
                 <button type="button" className="cc-link" onClick={() => void loadContent()}>Aktualisieren</button></div>
               <ContentPanel data={contentData} error={contentError} canEdit={canEdit} onMove={moveContent} onAsk={ask} onStartSkill={startSkill} />
             </>
           )}
           {section === "agenten" && (
             <>
-              <div className="cc-page-head"><div><h2>Agenten-Center</h2><p>Echte Jobs mit Schritten, Zeiten und Ergebnis. Aktiv ist nur, wofür wirklich ein Job läuft.</p></div></div>
               <AgentCenter data={agentData} error={agentError} canAct={canEdit} focusJob={focusJob} busyId={capBusy}
                 onCancel={(id) => void cancelJob(id)} onRetry={(id) => void capabilityAction(id, "wiederholen")}
                 onApprovals={() => go("freigaben")} onOpenOrder={openOrder} onStartRole={startRole} onRefresh={() => void loadWork()} />
@@ -614,24 +661,25 @@ export default function CommandView({
           )}
           {section === "automatisierungen" && (
             <>
-              <div className="cc-page-head"><div><h2>Skills und Automationen</h2>
-                <p>Vier verschiedene Dinge: Fähigkeiten (ausführbar), Skills (Anleitungen, die als Job laufen), geplante Abläufe und n8n-Workflows.</p></div></div>
-              <SkillPlatform platform={platform} error={capError} canEdit={canEdit} busy={capBusy}
-                onAction={(id, action) => void capabilityAction(id, action)} onOpenOrder={openOrder}
-                onStart={startCapability} onToggleSkill={(id, active) => void toggleSkill(id, active)} onOpenApprovals={() => go("freigaben")} />
-              <div className="cc-page-head ac-roles-head"><div><h2>Geplante Abläufe und Workflows</h2></div></div>
-              <AutomationsPanel data={automations} error={automationError} />
+              <SkillsOverview platform={platform} platformError={capError} automations={automations} automationError={automationError}
+                canEdit={canEdit} busy={capBusy} onStartSkill={startSkill} onToggleSkill={(id, active) => void toggleSkill(id, active)}
+                onRunAction={(id, action) => void capabilityAction(id, action)} onOpenApprovals={() => go("freigaben")} onOpenJobs={() => go("agenten")} />
+              <details className="so-more so-tools">
+                <summary>Bibliothek, GitHub, Integrationen, frühere Aufträge</summary>
+                <SkillPlatform platform={platform} error={capError} canEdit={canEdit} busy={capBusy}
+                  onAction={(id, action) => void capabilityAction(id, action)} onOpenOrder={openOrder}
+                  onStart={startCapability} onToggleSkill={(id, active) => void toggleSkill(id, active)} onOpenApprovals={() => go("freigaben")} />
+                <AutomationsPanel data={automations} error={automationError} />
+              </details>
             </>
           )}
           {section === "gedaechtnis" && (
             <>
-              <div className="cc-page-head"><div><h2>Gedächtnis</h2><p>Dauerhaftes Wissen und Gesprächsarchiv – ansehen, suchen, korrigieren, bestätigen, exportieren, löschen.</p></div></div>
               <MemoryCenter canEdit={canEdit} />
             </>
           )}
           {section === "verbindungen" && (
             <>
-              <div className="cc-page-head"><div><h2>Verbindungen und Einrichtung</h2><p>Was wirklich verbunden ist, was abgelaufen oder unvollständig ist – und was du dafür tun musst.</p></div></div>
               <ConnectionsPanel data={connections} error={connError} loading={connBusy} onRefresh={() => void loadConnections(true)} />
             </>
           )}
@@ -641,21 +689,20 @@ export default function CommandView({
             </Suspense>
           )}
           {section === "gespraech" && (
-            <CommandCenter telemetry={telemetry} audio={audio} role={role} connected={connected} transcripts={transcripts}
-              micOn={micOn} onMicChange={onMicChange} muted={muted} onMutedChange={onMutedChange} onAsk={onAsk} onStop={onStop} onLog={onLog}
-              automations={automations} approvals={approvals} onOpenApprovals={() => go("freigaben")}
-              settings={settings} onSettings={setSettings} voiceMode={voiceMode} onStartRealtime={onStartRealtime}
-              onStopRealtime={onStopRealtime} getRealtime={getRealtime} prefs={voicePrefs} onPrefs={onVoicePrefs} onReset={onReset}
-              platform={platform} jobs={agentData?.jobs ?? null} jobsError={agentError} busyJob={capBusy}
-              onOpenJob={openJob} onCancelJob={(id) => void cancelJob(id)} focusSignal={focusComposer} room={room} />
+            <div className="crm-start" role="region" aria-label="Command Center">
+              <h2>Das Command Center hat ein eigenes Fenster</h2>
+              <p>Sprache, Gespräch und Karte laufen dort.</p>
+              <button type="button" className="cc-btn brand" onClick={() => openCenter()}>Command Center öffnen</button>
+            </div>
           )}
           {section === "freigaben" && <ApprovalsPanel items={approvals} canDecide={canEdit} onDecide={decide} query={search} />}
+          </>}
         </div>
       </div>
       <nav className="cc-tabbar" aria-label="Schnellnavigation">
         {TABS.map((t) => (
           <button key={t.id} type="button" className={isCurrent(t.id) ? "active" : ""} aria-current={isCurrent(t.id) ? "page" : undefined} onClick={() => go(t.id)}>
-            <Icon name={t.icon} /><span>{t.id === "gespraech" ? "Command" : t.label}</span>{badge(t.id)}
+            <Icon name={t.icon} /><span>{t.id === "agenten" ? "Jobs" : t.label}</span>{badge(t.id)}
           </button>
         ))}
         <button type="button" aria-expanded={navOpen} onClick={() => setNavOpen(true)}><Icon name="menu" /><span>Menü</span></button>

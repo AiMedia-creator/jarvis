@@ -42,6 +42,63 @@ describe("VAD / resampling", () => {
     expect(v.push(new Float32Array(2))).toBeNull();
     expect(v.push(new Float32Array(2))).toBe("end");
   });
+  const frame = (level: number) => new Float32Array(320).fill(level);
+  const feed = (v: AdaptiveVad, level: number, frames: number, playback = false) => {
+    const events: string[] = [];
+    for (let i = 0; i < frames; i++) { const e = v.push(frame(level), playback); if (e) events.push(e); }
+    return events;
+  };
+  it("ignoriert Klicks und Tastenanschläge (kürzer als der Einsatz)", () => {
+    const v = new AdaptiveVad();
+    expect(feed(v, 0.001, 50)).toEqual([]);
+    expect(feed(v, 0.4, 3)).toEqual([]); // 60 ms Knall
+    expect(feed(v, 0.001, 20)).toEqual([]);
+    expect(feed(v, 0.2, 3)).toEqual([]);
+    expect(feed(v, 0.2, 1)).toEqual(["start"]); // 80 ms Stimme: auch ein kurzes „Stopp“ reicht
+    expect(v.onsetFrames()).toBe(4);
+  });
+  it("gewöhnt sich an Dauerrauschen statt endlos aufzunehmen, Sprache darüber startet weiter", () => {
+    const v = new AdaptiveVad(0.022, 6, 60);
+    const noise = feed(v, 0.03, 1500); // 30 s Lüfter knapp über der festen Schwelle
+    expect(noise.filter((e) => e === "start").length).toBeLessThanOrEqual(1);
+    expect(noise.at(-1) ?? "end").toBe("end");
+    expect(feed(v, 0.03, 500)).toEqual([]);
+    expect(feed(v, 0.25, 6)).toEqual(["start"]);
+  });
+  it("bleibt in stiller Umgebung bei der Grundschwelle", () => {
+    const v = new AdaptiveVad();
+    feed(v, 0.0005, 500);
+    expect(v.currentThreshold()).toBeCloseTo(0.022, 5);
+  });
+  it("unterbricht Jarvis nicht durch sein eigenes Echo, wohl aber durch den Nutzer", () => {
+    const v = new AdaptiveVad();
+    feed(v, 0.001, 100);
+    // Jarvis spricht: am Mikrofon kommen Silben mit 0,06–0,09 an (weit über der festen Schwelle 0,022).
+    const events: string[] = [];
+    for (let i = 0; i < 400; i++) {
+      const level = i % 14 < 10 ? 0.06 + 0.03 * ((i * 7) % 10) / 10 : 0.004;
+      const e = v.push(frame(level), true);
+      if (e) events.push(e);
+    }
+    expect(events).toEqual([]);
+    // Der Nutzer redet lauter rein, mit Silbenlücken: 140 ms Stimme innerhalb von 200 ms zählen als Sprachbeginn.
+    const reinreden = [0.2, 0.22, 0.18, 0.01, 0.2, 0.21, 0.19, 0.2];
+    const got = reinreden.map((level) => v.push(frame(level), true));
+    expect(got.slice(0, 7).every((e) => e === null)).toBe(true);
+    expect(got[7]).toBe("start");
+  });
+  it("lernt den Echo-Pegel in den ersten 300 ms der Wiedergabe, ohne auszulösen", () => {
+    const v = new AdaptiveVad();
+    feed(v, 0.001, 100);
+    expect(feed(v, 0.12, 200, true)).toEqual([]); // lautes Echo ab dem ersten Ton
+  });
+  it("übernimmt eine geänderte Sprechpause, ohne das Gelernte zu verlieren", () => {
+    const v = new AdaptiveVad(0.022, 6, 60);
+    feed(v, 0.2, 6);
+    v.setHangover(25);
+    expect(feed(v, 0.001, 24)).toEqual([]);
+    expect(feed(v, 0.001, 1)).toEqual(["end"]);
+  });
   it("resamples 48k to 16k", () => {
     const r = resampleTo16k(new Float32Array(480), 48000);
     expect(r.pcm.length).toBe(160);

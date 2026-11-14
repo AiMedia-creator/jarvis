@@ -16,7 +16,7 @@ import json
 
 import requests
 
-from . import config, profile, skills, tts
+from . import config, sprache, profile, skills, tts
 from .tools import Tool, ToolFailure, all_tools, string
 
 API = "https://api.elevenlabs.io/v1"
@@ -71,15 +71,15 @@ def _merken(notiz: str) -> str:
     from . import memory
 
     try:
-        saved = memory.store().remember(notiz, "note", "echtzeit", client="sprachkern")
+        # Memory v1: im Sprachkern nur als Vorschlag – bestätigen im Gedächtnis-Center oder per „Zeig meine Erinnerungen“.
+        saved = memory.store().remember(notiz, "note", "echtzeit", client="sprachkern", consent="vorschlag")
     except ValueError:
         return "Nicht gespeichert: leer, zu lang oder enthält Zugangsdaten."
     if saved.get("duplicate"):
         return "Das war bereits gespeichert."
-    if saved.get("conflicts"):
-        return ("Gespeichert, aber es widerspricht einer älteren Notiz: " + saved["conflicts"][0]["content"][:160]
-                + " – frag kurz nach, welche gilt.")
-    return "Gemerkt."
+    note = (" Achtung, es widerspricht einer älteren Notiz: " + saved["conflicts"][0]["content"][:160]) if saved.get("conflicts") else ""
+    return ("Als Vorschlag notiert, noch nicht dauerhaft gespeichert. Sag dem Nutzer: Er kann es im Gedächtnis-Center "
+            "bestätigen oder im Chat mit 'Zeig meine Erinnerungen' ansehen." + note)
 
 
 def voice_tools() -> list[Tool]:
@@ -87,8 +87,8 @@ def voice_tools() -> list[Tool]:
     extra = [
         Tool("web_suche", "Sucht aktuelle Informationen im Internet und fasst sie zusammen.",
              {"frage": string("was gesucht werden soll")}, _web_suche, ["frage"]),
-        Tool("merken", "Speichert eine dauerhafte Notiz ueber den Nutzer (Vorliebe, Kunde, Projekt). "
-                       "Nie Passwoerter oder Bankdaten.",
+        Tool("merken", "Legt einen VORSCHLAG fuer eine dauerhafte Notiz an (nur wenn der Nutzer 'merk dir' sagt); "
+                       "gespeichert wird erst nach seiner Bestaetigung im Gedaechtnis-Center. Nie Passwoerter oder Bankdaten.",
              {"notiz": string("die Notiz in einem Satz")}, _merken, ["notiz"]),
     ]
     from . import runtime
@@ -190,14 +190,18 @@ def sync_tools() -> list[str]:
     """Legt die Werkzeuge bei ElevenLabs an bzw. aktualisiert sie (nur wenn sich etwas geaendert hat)."""
     saved = json.loads(config.get("eleven_tool_ids") or "{}")
     hashes = json.loads(config.get("eleven_tool_hashes") or "{}")
-    ids = {}
+    ids: dict[str, str | None] = {}
+    changed = []
     for tool in voice_tools():
         cfg = _tool_config(tool)
         h = hashlib.sha1(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:12]
         tid = saved.get(tool.name)
-        if tid and hashes.get(tool.name) == h:
-            ids[tool.name] = tid
-            continue
+        ids[tool.name] = tid  # Reihenfolge der Werkzeuge bleibt erhalten
+        if not (tid and hashes.get(tool.name) == h):
+            changed.append((tool, cfg, h, tid))
+
+    def upload(item) -> tuple[str, str | None, str]:
+        tool, cfg, h, tid = item
         try:
             body = {"tool_config": cfg}
             res = _call("PATCH", f"/convai/tools/{tid}", json=body) if tid else _call("POST", "/convai/tools", json=body)
@@ -206,11 +210,22 @@ def sync_tools() -> list[str]:
                 raise
             body = {"tool_config": _tool_config(tool, "number")}  # falls "integer" nicht erlaubt ist
             res = _call("PATCH", f"/convai/tools/{tid}", json=body) if tid else _call("POST", "/convai/tools", json=body)
-        ids[tool.name] = res.get("id", tid)
-        hashes[tool.name] = h
-    config.save("eleven_tool_ids", json.dumps(ids))
-    config.save("eleven_tool_hashes", json.dumps({k: v for k, v in hashes.items() if k in ids}))
-    return list(ids.values())
+        return tool.name, res.get("id", tid), h
+
+    if changed:
+        # Nach einem Update ändern sich viele Werkzeuge auf einmal: nacheinander dauerte das rund eine halbe Minute,
+        # in der das Echtzeit-Gespräch nicht startete. Ein abgelehnter Schlüssel (401) wird nur einmal probiert.
+        from concurrent.futures import ThreadPoolExecutor
+
+        first = upload(changed[0])
+        with ThreadPoolExecutor(max_workers=6, thread_name_prefix="eleven-tools") as pool:
+            results = [first, *pool.map(upload, changed[1:])]
+        for name, tid, h in results:
+            ids[name] = tid
+            hashes[name] = h
+        config.save("eleven_tool_ids", json.dumps(ids))
+        config.save("eleven_tool_hashes", json.dumps({k: v for k, v in hashes.items() if k in ids}))
+    return [tid for tid in ids.values() if tid]
 
 
 def _voice_id() -> str:
@@ -221,7 +236,7 @@ def _voice_id() -> str:
 def _greeting() -> str:
     h = datetime.datetime.now().hour
     g = "Guten Morgen" if 4 <= h < 11 else "Guten Tag" if h < 18 else "Guten Abend"
-    return f"{g}, {config.get('owner_name', 'Omar')}. Alle Systeme sind online."
+    return f"{g}, {config.anrede() or config.get('owner_name', 'Omar')}. Alle Systeme sind online."
 
 
 def _system_prompt() -> str:
@@ -231,15 +246,16 @@ def _system_prompt() -> str:
     a.channel = "stimme"
     Agent.reload(a)
     now = datetime.datetime.now()
-    # Der Sprachkern hat keinen Nutzerzug mit Auszug: Gedächtnis einmalig an den (pro Sitzung festen) Prompt hängen.
-    prompt = a.system + "\n\n<gedaechtnis>\n" + Agent._memory_text(a) + "\n</gedaechtnis>\n"
+    # Memory v1: Der Sprachkern (ElevenLabs, Cloud) bekommt beim Start KEINE Erinnerungen – es gibt noch keine Frage, zu
+    # der sie passen könnten, und „alles mitschicken“ ist ausgeschlossen.
+    prompt = a.system
     prompt = prompt.replace("Jede Nachricht des Nutzers beginnt mit Datum und Uhrzeit in eckigen Klammern.",
                             f"Jetzt ist {german_date(now.date())}, {now:%H:%M} Uhr.")
     # Werkzeugnamen des Text-Jarvis, die es im Sprachkern nicht gibt
     for old, new in (("(web_search, web_fetch)", "(web_suche)"), ("Werkzeug memory, Ordner /memories", "Werkzeug merken"),
                      ("Nutze memory nur", "Nutze merken nur")):
         prompt = prompt.replace(old, new)
-    return prompt + VOICE_RULES.format(owner=config.get("owner_name", "Omar"))
+    return prompt + VOICE_RULES.format(owner=config.get("owner_name", "Omar")) + sprache.prompt_satz()
 
 
 def max_duration_seconds() -> int:
@@ -257,8 +273,8 @@ def conversation_config(tool_ids: list[str], pause: float = 1.0) -> dict:
     keywords += [k.strip() for k in (config.get("asr_keywords") or "").split(",") if k.strip()]
     return {
         "agent": {
-            "first_message": _greeting(),
-            "language": "de",
+            "first_message": sprache.begruessung(_greeting()),
+            "language": sprache.echtzeit_sprache(),
             "prompt": {"prompt": _system_prompt(), "llm": LLM.get(config.get("model") or "sonnet", LLM["sonnet"]),
                        "temperature": 0.4, "tool_ids": tool_ids},
         },

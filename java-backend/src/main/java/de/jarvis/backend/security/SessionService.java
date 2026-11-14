@@ -39,6 +39,30 @@ public final class SessionService {
         }
         return false;
     }
+    /**
+     * Schlüssel der gültigen Session aus dem Cookie (SHA-256, nie die Session-ID selbst). Leer, wenn keine gültige
+     * Session vorliegt; ohne Anmeldepflicht ein fester Wert. Damit bindet der Raum sein Besitzer-Ticket an die Session.
+     */
+    public synchronized String sessionKey(String cookie) {
+        if (!props.isAuthRequired()) return "lokal";
+        if (cookie == null || cookie.length() > 8192) return "";
+        for (String part : cookie.split(";")) {
+            String value = part.trim();
+            if (value.startsWith("JARVIS_SESSION=")) {
+                String id = value.substring("JARVIS_SESSION=".length());
+                Instant expires = sessions.get(id);
+                if (expires == null || !expires.isAfter(Instant.now())) return "";
+                try {
+                    byte[] hash = MessageDigest.getInstance("SHA-256").digest(id.getBytes(StandardCharsets.UTF_8));
+                    return Base64.getUrlEncoder().withoutPadding().encodeToString(hash);
+                } catch (java.security.NoSuchAlgorithmException impossible) { return ""; }
+            }
+        }
+        return "";
+    }
+    public String sessionKey(ServerWebExchange exchange) {
+        return sessionKey(exchange.getRequest().getHeaders().getFirst("Cookie"));
+    }
     public Mono<ResponseCookie> create(String token) {
         return Mono.defer(() -> createNow(token));
     }

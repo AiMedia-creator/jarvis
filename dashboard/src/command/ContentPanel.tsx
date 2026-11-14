@@ -35,7 +35,7 @@ function Card({ item, columns, canEdit, onMove, onStartSkill, onAsk }: { item: C
             ))}</ol>
           )}
           {item.skript ? <p><strong>Skript:</strong> {item.skript.length > 360 ? item.skript.slice(0, 360) + " …" : item.skript}</p> : <p className="cc-empty">Noch kein Skript.</p>}
-          {published && item.ergebnisse.length === 0 && <p className="cc-empty">Keine Kennzahlen erfasst – es gibt keine Analytics-Anbindung. Nenne Jarvis die Zahlen aus der Plattform.</p>}
+          {published && item.ergebnisse.length === 0 && <p className="cc-empty">Keine Kennzahlen erfasst (keine Analytics-Anbindung).</p>}
           {canEdit && (
             <div className="cc-actions">
               {item.hooks.length === 0 && <button type="button" className="cc-btn small" onClick={() => void start("content-hooks", `Entwickle Hooks für den Content-Eintrag „${item.titel}“ (ID ${item.id}) und speichere sie dort.`)}>Hooks entwickeln</button>}
@@ -84,7 +84,7 @@ export function ContentPanel({ data, error, canEdit, onMove, onAsk, onStartSkill
           <div><input id="ct-topic" value={topic} maxLength={300} placeholder="z. B. Warum 80 % der Kaltanrufe am Einstieg scheitern – für Gründer, Ziel: Leads" onChange={(e) => setTopic(e.target.value)} />
             <button type="submit" className="cc-btn accent">Hooks entwickeln</button></div>
           {state && <p className="cc-hint" role="status">{state}</p>}
-          <p className="cc-hint">Läuft als Job der Rolle „Content-Strategie und Hooks“: Recherche mit Quelle und Datum, Hooks bewertet nach Klarheit, Relevanz, Neugier, Belegbarkeit.</p>
+          <p className="cc-hint" title="Recherche mit Quelle und Datum; Hooks bewertet nach Klarheit, Relevanz, Neugier, Belegbarkeit.">Läuft als Job der Rolle „Content-Strategie und Hooks“.</p>
         </form>
       )}
       <p className="cc-source">{data.quelle}. Jarvis bringt Einträge höchstens bis „Review“; Freigabe und Veröffentlichung entscheidest du selbst.

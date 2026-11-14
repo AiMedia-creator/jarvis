@@ -120,6 +120,12 @@ def all_tools(skills_map, strategy_model: str | None = None) -> list[Tool]:
     from .. import browser
 
     tools.extend(browser.tools())  # echter Chrome über das installierte browser-harness (nur wenn eingeschaltet)
+    from .. import browser_agent
+
+    tools.extend(browser_agent.tools())  # Browser Use: lesende Recherche, nur eingeschaltet, nur nach Freigabe, in Sandbox
+    from .. import gbrain_bruecke
+
+    tools.extend(gbrain_bruecke.tools())  # lesende Zusatzsuche im gbrain-Abbild (nur wenn eingeschaltet und eingerichtet)
     # Alles, was nach aussen wirkt, laeuft ueber Vorlage + Freigabe.
     return [approvals.wrap(t) if "bestaetigt_vom_nutzer" in t.properties else t for t in tools]
 

@@ -47,6 +47,13 @@ public final class RoomRegistry {
 
     public int size() { return rooms.size(); }
 
+    /** Besitzernachweis für HTTP-Schreibzugriffe. Legt nie einen Raum an; unbekannter Raum = kein Besitzer. */
+    public boolean ownerTicketValid(String roomId, String ticket, String sessionKey) {
+        if (!Protocol.validId(roomId)) return false;
+        Room room = rooms.get(roomId);
+        return room != null && room.ownerTicketValid(ticket, sessionKey);
+    }
+
     public void removeIfEmpty(String id) {
         Room room = rooms.get(id);
         if (room != null && room.clientCount() == 0) rooms.remove(id, room);

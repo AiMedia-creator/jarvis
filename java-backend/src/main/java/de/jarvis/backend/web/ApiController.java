@@ -17,10 +17,13 @@ public final class ApiController {
     private final JarvisProperties props;
     private final SessionService sessions;
     private final PythonBridgeProvider bridge;
-    public ApiController(JarvisProperties props, SessionService sessions) { this(props, sessions, null); }
+    private final de.jarvis.backend.room.RoomRegistry rooms;
+    public ApiController(JarvisProperties props, SessionService sessions) { this(props, sessions, null, null); }
+    public ApiController(JarvisProperties props, SessionService sessions, PythonBridgeProvider bridge) { this(props, sessions, bridge, null); }
     @Autowired
-    public ApiController(JarvisProperties props, SessionService sessions, PythonBridgeProvider bridge) {
-        this.props = props; this.sessions = sessions; this.bridge = bridge;
+    public ApiController(JarvisProperties props, SessionService sessions, PythonBridgeProvider bridge,
+                         de.jarvis.backend.room.RoomRegistry rooms) {
+        this.props = props; this.sessions = sessions; this.bridge = bridge; this.rooms = rooms;
     }
 
     @GetMapping("/api/config")
@@ -118,6 +121,19 @@ public final class ApiController {
         var headers = exchange.getRequest().getHeaders();
         return sessions.authorized(exchange) && sessions.originAllowed(headers.getOrigin())
                 && "1".equals(headers.getFirst("X-Jarvis"));
+    }
+
+    /**
+     * Schreibrecht nur für den Besitzer eines Raums. {@code X-Jarvis: 1} ist ein fester Header und kein Nachweis.
+     * Verlangt wird zusätzlich das Ticket, das der Server dem Besitzer beim Beitritt über dessen Steuerverbindung
+     * gegeben hat ({@code X-Jarvis-Room} + {@code X-Jarvis-Owner}); es gilt nur, solange der Besitzer verbunden ist,
+     * und nur zusammen mit der Session, über die er verbunden ist. Ohne Raumverwaltung wird immer abgelehnt.
+     */
+    private boolean ownerWriteAllowed(ServerWebExchange exchange) {
+        if (!writeAllowed(exchange) || rooms == null) return false;
+        var headers = exchange.getRequest().getHeaders();
+        return rooms.ownerTicketValid(headers.getFirst("X-Jarvis-Room"), headers.getFirst("X-Jarvis-Owner"),
+                sessions.sessionKey(exchange));
     }
 
     private Mono<ResponseEntity<?>> forward(String method, String path, Object body) {
@@ -281,6 +297,94 @@ public final class ApiController {
         return forward("GET", "/internal/anrufe?tage=" + Math.max(1, Math.min(365, tage)), null);
     }
 
+    // --- Cold-Call-CRM: Leads (lokale Daten). Lesen mit Session; Schreiben nur für den Besitzer des Raums
+    //     (Session, Origin, X-Jarvis UND serverseitig geprüftes Besitzer-Ticket, siehe ownerWriteAllowed). ---
+
+    private static final String LEAD_WRITE = "Nur der Besitzer darf Leads ändern (Session, Origin, X-Jarvis und Besitzer-Ticket erforderlich).";
+
+    @GetMapping("/api/leads")
+    public Mono<ResponseEntity<?>> leads(@RequestParam(defaultValue = "") String status, @RequestParam(defaultValue = "") String q,
+                                         @RequestParam(defaultValue = "0") int offset, @RequestParam(defaultValue = "50") int limit,
+                                         @RequestParam(defaultValue = "") String snapshot, @RequestParam(defaultValue = "") String um,
+                                         ServerWebExchange exchange) {
+        if (!sessions.authorized(exchange)) return Mono.just(ResponseEntity.status(401).body(Map.of("fehler", "Session erforderlich.")));
+        if (!status.isEmpty() && !ID.matcher(status).matches()) return Mono.just(ResponseEntity.badRequest().body(Map.of("fehler", "Ungültiger Status.")));
+        if ((!snapshot.isEmpty() && !ID.matcher(snapshot).matches()) || (!um.isEmpty() && !ID.matcher(um).matches()))
+            return Mono.just(ResponseEntity.badRequest().body(Map.of("fehler", "Ungültige Seitenangabe.")));
+        // Seiten über den vollständigen Bestand: offset/limit begrenzt, snapshot hält die Reihenfolge beim Blättern stabil.
+        return forward("GET", "/internal/leads?status=" + status + "&q=" + PythonBridgeProvider.query(Protocol.safe(q, 80))
+                + "&offset=" + Math.max(0, Math.min(offset, 10_000_000)) + "&limit=" + Math.max(1, Math.min(limit, 200))
+                + "&snapshot=" + snapshot + "&um=" + um, null);
+    }
+
+    @GetMapping("/api/leads/session")
+    public Mono<ResponseEntity<?>> leadSession(@RequestParam(defaultValue = "0") double seit, ServerWebExchange exchange) {
+        if (!sessions.authorized(exchange)) return Mono.just(ResponseEntity.status(401).body(Map.of("fehler", "Session erforderlich.")));
+        return forward("GET", "/internal/leads/session?seit=" + (long) Math.max(0, seit), null);
+    }
+
+    @GetMapping("/api/leads/{id}")
+    public Mono<ResponseEntity<?>> lead(@PathVariable String id, ServerWebExchange exchange) {
+        if (!sessions.authorized(exchange)) return Mono.just(ResponseEntity.status(401).body(Map.of("fehler", "Session erforderlich.")));
+        if (!ID.matcher(id).matches()) return Mono.just(ResponseEntity.badRequest().body(Map.of("fehler", "Ungültige ID.")));
+        return forward("GET", "/internal/leads/" + id, null);
+    }
+
+    @PostMapping("/api/leads")
+    public Mono<ResponseEntity<?>> leadCreate(@RequestBody Mono<Map<String, Object>> body, ServerWebExchange exchange) {
+        if (!ownerWriteAllowed(exchange)) return Mono.just(ResponseEntity.status(403).body(Map.of("fehler", LEAD_WRITE)));
+        return body.flatMap(value -> forward("POST", "/internal/leads", value));
+    }
+
+    /** Obergrenze der CSV-Datei laut Plan: 1 MB (muss zu jarvis/leads.py CSV_MAX_BYTES passen). */
+    static final int MAX_CSV = 1_000_000;
+
+    /**
+     * CSV-Import als rohe Datei (nicht als JSON): Der JSON-Decoder ist auf 16 KB begrenzt, und nur an rohen Bytes
+     * lässt sich das Limit von 1 MB und gültiges UTF-8 wirklich prüfen. {@code ausfuehren=false} prüft nur.
+     */
+    @PostMapping("/api/leads/import")
+    public Mono<ResponseEntity<?>> leadImport(@RequestParam(defaultValue = "false") boolean ausfuehren, ServerWebExchange exchange) {
+        if (!ownerWriteAllowed(exchange)) return Mono.just(ResponseEntity.status(403).body(Map.of("fehler", LEAD_WRITE)));
+        if (exchange.getRequest().getHeaders().getContentLength() > MAX_CSV) return Mono.just(csvTooLarge());
+        if (bridge == null) return Mono.just(ResponseEntity.status(503).body(Map.of("fehler", "Python-Bridge nicht aktiv.")));
+        String path = "/internal/leads/import?ausfuehren=" + (ausfuehren ? "1" : "0");
+        return org.springframework.core.io.buffer.DataBufferUtils.join(exchange.getRequest().getBody(), MAX_CSV)
+                .map(buffer -> {
+                    byte[] bytes = new byte[buffer.readableByteCount()];
+                    buffer.read(bytes);
+                    org.springframework.core.io.buffer.DataBufferUtils.release(buffer);
+                    return bytes;
+                })
+                .defaultIfEmpty(new byte[0])
+                .flatMap(bytes -> bytes.length == 0
+                        ? Mono.just((ResponseEntity<?>) ResponseEntity.badRequest().body(Map.of("fehler", "Die CSV-Datei ist leer.")))
+                        : bridge.upload(path, bytes).<ResponseEntity<?>>map(value -> ResponseEntity.status(value.getStatusCode())
+                                .header(HttpHeaders.CACHE_CONTROL, "no-store").body(value.getBody())))
+                .onErrorResume(org.springframework.core.io.buffer.DataBufferLimitException.class, error -> Mono.just(csvTooLarge()))
+                .onErrorResume(error -> Mono.just(ResponseEntity.status(502).body(Map.of("fehler", "Bridge nicht erreichbar."))));
+    }
+
+    private static ResponseEntity<?> csvTooLarge() {
+        return ResponseEntity.status(413).body(Map.of("fehler", "Die CSV-Datei ist zu groß (höchstens 1 MB)."));
+    }
+
+    @PatchMapping("/api/leads/{id}")
+    public Mono<ResponseEntity<?>> leadUpdate(@PathVariable String id, @RequestBody Mono<Map<String, Object>> body, ServerWebExchange exchange) {
+        if (!ownerWriteAllowed(exchange)) return Mono.just(ResponseEntity.status(403).body(Map.of("fehler", LEAD_WRITE)));
+        if (!ID.matcher(id).matches()) return Mono.just(ResponseEntity.badRequest().body(Map.of("fehler", "Ungültige ID.")));
+        return body.flatMap(value -> forward("PATCH", "/internal/leads/" + id, value));
+    }
+
+    @PostMapping("/api/leads/{id}/{aktion}")
+    public Mono<ResponseEntity<?>> leadAction(@PathVariable String id, @PathVariable String aktion,
+                                              @RequestBody Mono<Map<String, Object>> body, ServerWebExchange exchange) {
+        if (!ownerWriteAllowed(exchange)) return Mono.just(ResponseEntity.status(403).body(Map.of("fehler", LEAD_WRITE)));
+        if (!ID.matcher(id).matches() || !("ergebnis".equals(aktion) || "notiz".equals(aktion)))
+            return Mono.just(ResponseEntity.badRequest().body(Map.of("fehler", "Ungültige ID oder Aktion.")));
+        return body.flatMap(value -> forward("POST", "/internal/leads/" + id + "/" + aktion, value));
+    }
+
     /** Content-Workflow: Einträge lesen; Status ab „Freigegeben“ nur mit Session, Origin und X-Jarvis. Keine Veröffentlichung. */
     @GetMapping("/api/content")
     public Mono<ResponseEntity<?>> content(ServerWebExchange exchange) {
@@ -324,7 +428,7 @@ public final class ApiController {
     // --- Agenten-Center, Verbindungen, Gedächtnis-Center, fortlaufendes Transkript ---
 
     private static final java.util.Set<String> MEMORY_ACTIONS =
-            java.util.Set.of("speichern", "aendern", "bestaetigen", "loeschen", "archiv_loeschen", "index_neu");
+            java.util.Set.of("speichern", "aendern", "bestaetigen", "loeschen", "archiv_loeschen", "index_neu", "alle_loeschen");
 
     /** Echte Jobs je Agent mit Schritten, Zeiten, Ergebnis und Rollenabdeckung (nur lesend). */
     @GetMapping("/api/agenten")

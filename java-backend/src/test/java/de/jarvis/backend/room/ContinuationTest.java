@@ -66,6 +66,26 @@ class ContinuationTest {
     assertEquals("Erklär mir, wie ich ein KI-Produkt baue und wie verkaufe ich das an Steuerberater?", prompts.get(1));
   }
 
+  @Test void verworfeneZusatzaufnahmeBeantwortetDieFrageTrotzdem() {
+    // Ein Geräusch während Jarvis denkt startet eine Aufnahme, die der Browser gleich wieder verwirft (AUDIO_ABORT).
+    // Die bereits gestellte Frage darf dabei nicht verloren gehen und der Raum nicht auf „hört zu“ stehen bleiben.
+    Room r = room(thinkingForever(), (s, c) -> Flux.empty(), new FakeStt());
+    r.start("owner1234", "Was steht heute an?");
+    UUID u = UUID.randomUUID();
+    r.audioStart("owner1234", u, 16_000);
+    r.audioAbort("owner1234", u);
+    waitUntil(() -> prompts.size() == 2);
+    assertEquals(List.of("Was steht heute an?", "Was steht heute an?"), prompts);
+  }
+
+  @Test void verworfeneAufnahmeOhneOffeneFrageFuehrtZuRuhe() {
+    Room r = room(thinkingForever(), (s, c) -> Flux.empty(), new FakeStt());
+    UUID u = UUID.randomUUID();
+    r.audioStart("owner1234", u, 16_000);
+    r.audioAbort("owner1234", u);
+    assertEquals(0, prompts.size());
+  }
+
   @Test void stopVomBrowserBeiSprachbeginnUebernimmtEbenfalls() {
     FakeStt stt = new FakeStt();
     stt.texts.put(6400, "zweiter Teil");

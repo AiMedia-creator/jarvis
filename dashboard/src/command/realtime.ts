@@ -172,6 +172,9 @@ export class RealtimeSession {
   async start(pause: number, muted: boolean): Promise<void> {
     this.stopped = false;
     this.callbacks.onMode("verbindet");
+    // Blockiertes Mikrofon sofort melden – nicht erst nach der Sitzungsvorbereitung beim Anbieter (mehrere Sekunden).
+    const permission = await navigator.permissions?.query({ name: "microphone" as PermissionName }).catch(() => null);
+    if (permission?.state === "denied") throw new DOMException("Mikrofon blockiert", "NotAllowedError");
     const [client, session] = await Promise.all([loadClient(), api.realtimeSession(pause)]);
     if (this.stopped) return;
     const clientTools: Record<string, (params: unknown) => Promise<string>> = {};

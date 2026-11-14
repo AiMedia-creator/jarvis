@@ -118,3 +118,32 @@ describe("Nachrichten-Markierungen", () => {
     expect(findFocus(markers, "Paris")).toBeUndefined();
   });
 });
+
+describe("Ortsbefehl „Zeig Berlin“", () => {
+  const c = (text: string) => classifyUtterance(text, [{ symbol: "TSLA", name: "Tesla", aliases: ["tesla"] }]);
+  it("öffnet die Karte mit dem Ort", () => {
+    expect(c("Zeig Berlin")).toMatchObject({ kind: "open", view: "world", explicit: true, query: "Berlin" });
+    expect(c("Zeig mir bitte München.")).toMatchObject({ view: "world", query: "München" });
+  });
+  it("verdrängt weder Nachrichten noch Markt noch Kameras", () => {
+    expect(c("Zeig Nachrichten aus Berlin")).toMatchObject({ view: "news", query: "Berlin" });
+    expect(c("Zeig mir den Tesla-Kurs")).toMatchObject({ view: "market" });
+    expect(c("Zeig die Kameras in Berlin")).toMatchObject({ view: "cameras" });
+  });
+  it("reagiert nicht auf Verneinung oder unbekannte Orte", () => {
+    expect(c("Zeig nicht Berlin")).toEqual({ kind: "none" });
+    expect(c("Zeig Entenhausen")).toEqual({ kind: "none" });
+  });
+});
+
+describe("Ortsbefehl auf Ägyptisch", () => {
+  it("öffnet die Karte für bekannte Städte", () => {
+    expect(classifyUtterance("وريني برلين")).toMatchObject({ kind: "open", view: "world", explicit: true, query: "Berlin" });
+    expect(classifyUtterance("افتح خريطة القاهرة؟")).toMatchObject({ view: "world", query: "Kairo" });
+    expect(classifyUtterance("وريني الإسكندرية")).toMatchObject({ view: "world", query: "Alexandria" });
+  });
+  it("ignoriert Unbekanntes und normale Sätze", () => {
+    expect(classifyUtterance("وريني الإيميلات")).toEqual({ kind: "none" });
+    expect(classifyUtterance("إزيك يا جارفس")).toEqual({ kind: "none" });
+  });
+});

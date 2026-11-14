@@ -37,6 +37,10 @@ type Callbacks = {
 };
 
 const FRAME_MS = 20;
+/** Vorlauf vor dem erkannten Sprachbeginn (400 ms bei 16 kHz): deckt den Einsatz der VAD samt leisem Wortanfang. */
+const PRE_ROLL_SAMPLES = 6400;
+/** So lange nach dem letzten hörbaren Ton gilt die Echo-Schwelle weiter (Ausgabelatenz und Nachhall im Raum). */
+const ECHO_TAIL_MS = 300;
 
 export class AudioEngine {
   private ctx: AudioContext | null = null;
@@ -44,9 +48,12 @@ export class AudioEngine {
   private worklet: AudioWorkletNode | null = null;
   private socket: WebSocket | null = null;
   private readonly gate = new PlaybackGate();
-  // 20-ms-Frames: Einsatz nach 60 ms; Ende erst nach 1,2 s Pause (Denkpausen in längeren Fragen beenden nichts).
+  // 20-ms-Frames: Einsatz nach 80 ms (bei laufender Wiedergabe 140 ms Stimme über dem Echo-Pegel); Ende erst nach
+  // 1,2 s Pause (Denkpausen in längeren Fragen beenden nichts).
   private hangoverFrames = VAD_HANGOVER_FRAMES;
-  private vad = new AdaptiveVad(VAD_THRESHOLD, VAD_ONSET_FRAMES, VAD_HANGOVER_FRAMES);
+  private readonly vad = new AdaptiveVad(VAD_THRESHOLD, VAD_ONSET_FRAMES, VAD_HANGOVER_FRAMES);
+  /** Bis wann (performance.now) Jarvis' Stimme noch am Mikrofon ankommen kann: hörbare Wiedergabe plus Nachhall. */
+  private echoUntil = 0;
   /** Reinreden: "frei" = Sprechen stoppt Jarvis sofort; "aus" = während er hörbar spricht, wird nicht aufgenommen. */
   private barge: "frei" | "aus" = "frei";
   /** Sprechmodus: "frei" = Daueraufnahme mit VAD; "ptt" = nur solange gedrückt gehalten wird. */
@@ -82,6 +89,7 @@ export class AudioEngine {
   private utterance = "";
   private startedAt = 0;
   private closed = false;
+  private enabling: Promise<void> | null = null;
   private callbacks: Callbacks;
   /** Pegel nur zur Darstellung (Voice-Core); beeinflusst weder VAD noch Wiedergabe. */
   private inputLevel = 0;
@@ -142,7 +150,7 @@ export class AudioEngine {
     const frames = Math.round(Math.max(0.5, Math.min(2.5, seconds)) * (1000 / FRAME_MS));
     if (frames === this.hangoverFrames) return;
     this.hangoverFrames = frames;
-    this.vad = new AdaptiveVad(VAD_THRESHOLD, VAD_ONSET_FRAMES, frames);
+    this.vad.setHangover(frames); // gelerntes Grundrauschen und Echo-Pegel bleiben erhalten
   }
   setBarge(mode: "frei" | "aus"): void {
     this.barge = mode;
@@ -182,6 +190,12 @@ export class AudioEngine {
   isAudible(): boolean {
     if (!this.ctx || this.activeNodes.size === 0) return false;
     return this.ctx.currentTime < this.audibleEndCtx;
+  }
+  /** Kann Jarvis' eigene Stimme gerade am Mikrofon ankommen? Dann gilt die strengere Reinreden-Schwelle. */
+  private echoPossible(): boolean {
+    const now = performance.now();
+    if (this.isAudible() && !this.muted) this.echoUntil = now + ECHO_TAIL_MS;
+    return now < this.echoUntil;
   }
   outputLatencyMs(): number | null {
     const latency = (this.ctx as (AudioContext & { outputLatency?: number }) | null)?.outputLatency;
@@ -257,11 +271,17 @@ export class AudioEngine {
     return { input: this.media ? this.inputLevel : 0, output };
   }
 
-  async enableMic(): Promise<void> {
-    if (this.media) return;
+  /** Schaltet das Mikrofon ein. Doppelte Aufrufe (Doppelklick, Taste + Klick) teilen sich denselben Start. */
+  enableMic(): Promise<void> {
+    if (this.media && this.worklet) return Promise.resolve();
+    this.enabling ??= this.startMic().finally(() => { this.enabling = null; });
+    return this.enabling;
+  }
+
+  private async startMic(): Promise<void> {
     this.closed = false;
     await this.unlockPlayback();
-    this.media = await navigator.mediaDevices.getUserMedia({
+    const media = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
         echoCancellation: true,
@@ -269,18 +289,28 @@ export class AudioEngine {
         autoGainControl: true,
       },
     });
-    await this.ctx!.audioWorklet.addModule("/audio-worklet.js");
-    const source = this.ctx!.createMediaStreamSource(this.media);
-    this.worklet = new AudioWorkletNode(this.ctx!, "jarvis-mic");
-    const mute = this.ctx!.createGain();
-    mute.gain.value = 0;
-    source.connect(this.worklet).connect(mute).connect(this.ctx!.destination);
-    this.worklet.port.onmessage = (
-      event: MessageEvent<{ type?: string; samples?: Float32Array }>,
-    ) => {
-      if (event.data?.type === "samples" && event.data.samples)
-        this.accept(event.data.samples);
-    };
+    try {
+      const ctx = this.ctx;
+      if (!ctx || this.closed) throw new DOMException("Audio wurde während des Starts geschlossen.", "AbortError");
+      await ctx.audioWorklet.addModule("/audio-worklet.js");
+      const source = ctx.createMediaStreamSource(media);
+      const worklet = new AudioWorkletNode(ctx, "jarvis-mic");
+      const mute = ctx.createGain();
+      mute.gain.value = 0;
+      source.connect(worklet).connect(mute).connect(ctx.destination);
+      worklet.port.onmessage = (
+        event: MessageEvent<{ type?: string; samples?: Float32Array }>,
+      ) => {
+        if (event.data?.type === "samples" && event.data.samples)
+          this.accept(event.data.samples);
+      };
+      this.media = media;
+      this.worklet = worklet;
+    } catch (error) {
+      // Nie ein offenes Mikrofon ohne Verarbeitung zurücklassen: sonst zeigt der Browser „Mikro an“, Jarvis hört aber nichts.
+      media.getTracks().forEach((track) => track.stop());
+      throw error;
+    }
     this.callbacks.log(
       "Mikrofon explizit aktiviert; clientseitige Energie-VAD aktiv.",
     );
@@ -304,16 +334,16 @@ export class AudioEngine {
     while (this.vadWindow.length >= 320) {
       const frame = this.vadWindow.splice(0, 320);
       this.preRoll.push(...frame);
-      if (this.preRoll.length > 3200)
-        this.preRoll.splice(0, this.preRoll.length - 3200);
+      if (this.preRoll.length > PRE_ROLL_SAMPLES)
+        this.preRoll.splice(0, this.preRoll.length - PRE_ROLL_SAMPLES);
       const normalized = Float32Array.from(frame, (sample) => sample / 32768);
       const ptt = this.talkMode === "ptt";
-      const event = ptt ? null : this.vad.push(normalized);
+      const event = ptt ? null : this.vad.push(normalized, this.echoPossible());
       let onset = false;
       // Reinreden aus: solange Jarvis hörbar spricht, startet keine Aufnahme.
       if (event === "start" && !this.recording && !(this.barge === "aus" && this.isAudible())) {
         // Erster stimmhafter Frame = VAD-Start minus Einsatz-Frames.
-        this.beginRecording(performance.now() - VAD_ONSET_FRAMES * FRAME_MS);
+        this.beginRecording(performance.now() - this.vad.onsetFrames() * FRAME_MS);
         onset = true;
       }
       if (this.recording && !onset) this.sendPcm(frame, false);
@@ -350,7 +380,7 @@ export class AudioEngine {
     this.sendPcm(this.preRoll, false);
     this.callbacks.state("listening");
     this.callbacks.log(
-      this.talkMode === "ptt" ? "Push-to-talk: Aufnahme läuft, solange gehalten wird." : "Sprachbeginn: STOP_STREAM sofort gesendet, 200 ms Vorlauf übertragen.",
+      this.talkMode === "ptt" ? "Push-to-talk: Aufnahme läuft, solange gehalten wird." : "Sprachbeginn: STOP_STREAM sofort gesendet, 400 ms Vorlauf übertragen.",
     );
   }
 
