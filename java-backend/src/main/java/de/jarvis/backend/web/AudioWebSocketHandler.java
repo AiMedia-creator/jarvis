@@ -131,7 +131,9 @@ public final class AudioWebSocketHandler implements WebSocketHandler {
                     throw new IllegalArgumentException("sample_rate muss 16000 sein");
                 Capture previous = capture.getAndSet(null);
                 if (previous != null) room.audioAbort(client, previous.id);
-                room.audioStart(client, id, 16_000);
+                // Vorläufig: Jarvis spricht hörbar, der Browser hat ihn nur leiser gestellt. Gestoppt wird erst,
+                // wenn der Sprach-Türsteher die Äußerung als an Jarvis gerichtet einstuft.
+                room.audioStart(client, id, 16_000, Boolean.TRUE.equals(body.get("tentative")));
                 capture.set(new Capture(id));
                 yield Mono.empty();
             }

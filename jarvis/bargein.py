@@ -1,7 +1,7 @@
 """Intelligentes Unterbrechen: Nur wenn der Nutzer Jarvis wirklich meint – nicht bei Stimmen im Raum.
 
-Erst schnelle Regeln (Stopp-Woerter, "Jarvis", Fuellwoerter), dann bei Bedarf eine blitzschnelle Einschaetzung
-durch das kleinste Modell. Im Zweifel wird NICHT unterbrochen (Stopp/Esc funktionieren immer).
+Erst schnelle Regeln (Stopp-Woerter, "Jarvis", Fuellwoerter), dann der Sprach-Tuersteher (TypeSafe, sprachpruefung.py)
+oder ohne ihn eine blitzschnelle Einschaetzung durch das kleinste Modell. Im Zweifel wird NICHT unterbrochen (Stopp/Esc funktionieren immer).
 """
 
 from __future__ import annotations
@@ -39,6 +39,12 @@ def should_interrupt(text: str, context: str = "") -> dict:
     rule = quick_rules(text)
     if rule is not None:
         return {"unterbrechen": rule, "grund": "regel"}
+    from . import sprachpruefung
+
+    if sprachpruefung.aktiv():  # Sprach-Türsteher (TypeSafe) statt Modell-Einschätzung; bei Fehlern weiter unten
+        urteil = sprachpruefung.pruefe(text, context, jarvis_spricht=True)
+        if urteil["quelle"] == "typesafe":
+            return {"unterbrechen": urteil["aktion"] != sprachpruefung.IGNORIEREN, "grund": f"typesafe:{urteil['grund']}"}
     try:
         from .agent import MODELS, make_client
 

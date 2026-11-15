@@ -93,3 +93,63 @@ describe("Mikrofon-Start", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("Vorläufiges Reinreden (Sprach-Türsteher)", () => {
+  function setup(audible: boolean, gate = true) {
+    vi.useFakeTimers();
+    const sent: string[] = [];
+    const stopControl = vi.fn();
+    const engine = new AudioEngine({ state: vi.fn(), log: vi.fn(), stopControl });
+    const inner = engine as any;
+    inner.ctx = { sampleRate: 48000, currentTime: 0 };
+    inner.muteGain = { gain: { setTargetAtTime: vi.fn(), value: 1 } };
+    vi.spyOn(engine, "isAudible").mockReturnValue(audible);
+    engine.setTentativeBarge(gate);
+    const stopPlayback = vi.spyOn(engine, "stopPlayback");
+    vi.stubGlobal("WebSocket", { OPEN: 1 });
+    engine.attach({ readyState: 1, bufferedAmount: 0, send: (p: unknown) => { if (typeof p === "string") sent.push(p); } } as unknown as WebSocket);
+    inner.beginRecording(performance.now());
+    const start = JSON.parse(sent[0]);
+    return { engine, inner, stopControl, stopPlayback, start };
+  }
+
+  it("stellt Jarvis nur leiser, solange der Server prüft, und stoppt ihn nicht", () => {
+    const { engine, inner, stopControl, stopPlayback, start } = setup(true);
+    expect(start).toMatchObject({ type: "AUDIO_START", tentative: true });
+    expect(stopControl).not.toHaveBeenCalled();
+    expect(stopPlayback).not.toHaveBeenCalled();
+    expect(engine.isDucked()).toBe(true);
+    expect(inner.muteGain.gain.setTargetAtTime).toHaveBeenLastCalledWith(0.25, 0, 0.03);
+    engine.bargeIgnored(start.utterance_id);   // nicht an Jarvis gerichtet
+    expect(engine.isDucked()).toBe(false);
+    expect(inner.muteGain.gain.setTargetAtTime).toHaveBeenLastCalledWith(1, 0, 0.03);
+    vi.useRealTimers(); vi.unstubAllGlobals();
+  });
+
+  it("gibt die Lautstärke spätestens nach 12 s zurück und bei verworfener Aufnahme sofort", () => {
+    const first = setup(true);
+    vi.advanceTimersByTime(12_000);
+    expect(first.engine.isDucked()).toBe(false);
+    vi.useRealTimers(); vi.unstubAllGlobals();
+    const second = setup(true);
+    second.engine.finish(true);
+    expect(second.engine.isDucked()).toBe(false);
+    vi.useRealTimers(); vi.unstubAllGlobals();
+  });
+
+  it("stoppt ohne aktiven Türsteher wie bisher sofort, auch wenn Jarvis hörbar spricht", () => {
+    const { engine, stopControl, start } = setup(true, false);
+    expect(start.tentative).toBeUndefined();
+    expect(stopControl).toHaveBeenCalledExactlyOnceWith("vad");
+    expect(engine.isDucked()).toBe(false);
+    vi.useRealTimers(); vi.unstubAllGlobals();
+  });
+
+  it("stoppt wie bisher sofort, wenn Jarvis gerade nicht hörbar spricht", () => {
+    const { engine, stopControl, start } = setup(false);
+    expect(start.tentative).toBeUndefined();
+    expect(stopControl).toHaveBeenCalledExactlyOnceWith("vad");
+    expect(engine.isDucked()).toBe(false);
+    vi.useRealTimers(); vi.unstubAllGlobals();
+  });
+});

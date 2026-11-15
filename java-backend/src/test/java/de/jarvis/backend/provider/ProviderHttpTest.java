@@ -48,6 +48,34 @@ class ProviderHttpTest {
         } finally { server.disposeNow(); }
     }
 
+    @Test void sendsGateContextAndReadsTheDecision() {
+        AtomicReference<String> body = new AtomicReference<>();
+        var server = HttpServer.create().host("127.0.0.1").port(0).handle((request, response) ->
+                request.receive().aggregate().asString(java.nio.charset.StandardCharsets.UTF_8).flatMap(value -> {
+                    body.set(value);
+                    return response.header("Content-Type", "application/json").sendString(reactor.core.publisher.Mono.just(
+                            "{\"text\":\"Schatz?\",\"aktion\":\"ignorieren\",\"grund\":\"nicht an Jarvis\"}")).then();
+                })).bindNow();
+        try {
+            JarvisProperties props = new JarvisProperties();
+            props.setDemo(false);
+            props.setSttUrl("http://127.0.0.1:" + server.port() + "/transcriptions");
+            var provider = new SttProvider(WebClient.builder(), props);
+            String lang = "Jarvis sagt gerade: " + "ä".repeat(4000) + " Ende des Satzes.";
+            var result = provider.transcribeTimed(new byte[6400], new CancellationToken(),
+                    new SttProvider.GateContext(lang, true)).block(Duration.ofSeconds(3));
+            assertEquals("ignorieren", result.aktion());
+            assertEquals("nicht an Jarvis", result.grund());
+            assertTrue(body.get().contains("name=\"pruefen\""));
+            assertTrue(body.get().contains("Ende des Satzes."), "das zuletzt Gesagte bleibt beim Kürzen erhalten");
+            assertTrue(SttProvider.tail(lang, SttProvider.MAX_CONTEXT_BYTES).getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+                    <= SttProvider.MAX_CONTEXT_BYTES);
+            assertNull(SttProvider.aktion("loeschen"), "unbekannte Aktion gilt als keine Prüfung");
+            assertTrue(SttProvider.isLocal("http://127.0.0.1:8766/internal/transcribe"));
+            assertFalse(SttProvider.isLocal("https://api.openai.com/v1/audio/transcriptions"), "Kontext nie an fremde Dienste");
+        } finally { server.disposeNow(); }
+    }
+
     @Test void transcribesLocalMultipartWavAndDemoIsHonest() {
         AtomicReference<String> body = new AtomicReference<>();
         var server = HttpServer.create().host("127.0.0.1").port(0).handle((request, response) ->

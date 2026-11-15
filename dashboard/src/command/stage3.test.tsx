@@ -128,6 +128,41 @@ describe("Umschalter Studio | Echtzeit", () => {
     act(() => root.unmount());
   });
 
+  it("sagt, warum eine Äußerung nicht beantwortet wurde, und zeigt den Türsteher in der Diagnose", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const tuersteher = { an: true, aktiv: true, modell: "jev-1.14.0", problem: null };
+    await act(async () => root.render(<CommandCenter {...base} stage settings={{ ...settings, tuersteher }}
+      gateNote={{ aktion: "ignorieren", grund: "nicht an Jarvis", t: Date.now() }} />));
+    expect(host.querySelector(".cc-gate")!.textContent).toContain("klang nicht an Jarvis gerichtet");
+    await act(async () => [...host.querySelectorAll<HTMLButtonElement>(".cc-bar button")].find((b) => b.textContent?.startsWith("Diagnose"))!.click());
+    expect(host.querySelector(".cc-diag")!.textContent).toContain("TürsteherTypeSafe · jev-1.14.0");
+    act(() => root.unmount());
+  });
+
+  it("schaltet den Türsteher in den Einstellungen um und nennt den fehlenden Schlüssel", async () => {
+    const saved: unknown[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      saved.push(JSON.parse(String(init.body)));
+      return new Response(JSON.stringify({ ...settings, tuersteher: { an: false, aktiv: false, modell: "jev-1.14.0", problem: null } }), { status: 200 });
+    }));
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const onSettings = vi.fn();
+    await act(async () => root.render(<CommandCenter {...base} onSettings={onSettings}
+      settings={{ ...settings, tuersteher: { an: true, aktiv: false, modell: "jev-1.14.0", problem: "TYPESAFE_API_KEY fehlt" } }} />));
+    await act(async () => [...host.querySelectorAll<HTMLButtonElement>(".cc-bar button")].find((b) => b.textContent === "Einstellungen")!.click());
+    const dialog = host.querySelector(".cc-dialog")!;
+    expect(dialog.textContent).toContain("Nicht aktiv: TYPESAFE_API_KEY fehlt");
+    const box = [...dialog.querySelectorAll<HTMLInputElement>("input[type=checkbox]")].find((i) => i.closest("label")?.textContent?.includes("Sprach-Türsteher"))!;
+    await act(async () => box.click());
+    expect(saved).toEqual([{ tuersteher: false }]);
+    expect(onSettings).toHaveBeenCalled();
+    act(() => root.unmount());
+  });
+
   it("öffnet die Einstellungen als Dialog", async () => {
     const host = document.createElement("div");
     document.body.append(host);

@@ -41,6 +41,10 @@ const FRAME_MS = 20;
 const PRE_ROLL_SAMPLES = 6400;
 /** So lange nach dem letzten hörbaren Ton gilt die Echo-Schwelle weiter (Ausgabelatenz und Nachhall im Raum). */
 const ECHO_TAIL_MS = 300;
+/** Lautstärke, auf die Jarvis beim vorläufigen Reinreden sinkt, bis der Sprach-Türsteher entschieden hat. */
+const DUCK_GAIN = 0.25;
+/** Spätestens dann wieder volle Lautstärke, falls keine Entscheidung kommt (Verbindung weg, Server alt). */
+const DUCK_TIMEOUT_MS = 12_000;
 
 export class AudioEngine {
   private ctx: AudioContext | null = null;
@@ -99,6 +103,12 @@ export class AudioEngine {
   /** Stumm-Gain hinter dem Analyser: Band misst weiter, was Jarvis sendet. */
   private muteGain: GainNode | null = null;
   private muted = false;
+  /** Vorläufiges Reinreden: Aufnahme läuft, Jarvis spricht leiser weiter, bis der Server entscheidet. */
+  private tentativeUtterance: string | null = null;
+  /** Nur mit aktivem Sprach-Türsteher: ohne ihn stoppt Reinreden Jarvis sofort wie bisher. */
+  private tentativeBarge = false;
+  private ducked = false;
+  private duckTimer: ReturnType<typeof setTimeout> | null = null;
   /** Eingangspegel seit dem letzten meter()-Aufruf, aus den Roh-Samples des Worklets. */
   private inPeak = 0;
   private inSum = 0;
@@ -136,7 +146,7 @@ export class AudioEngine {
       this.analyser.fftSize = 2048; // ≈ 43 ms bei 48 kHz: deckt ein 50-ms-Messfenster fast ganz ab
       this.analyser.smoothingTimeConstant = 0.6;
       this.muteGain = this.ctx.createGain();
-      this.muteGain.gain.value = this.muted ? 0 : 1;
+      this.muteGain.gain.value = this.muted ? 0 : this.ducked ? DUCK_GAIN : 1;
       this.analyser.connect(this.muteGain).connect(this.ctx.destination);
       this.analyserData = new Uint8Array(new ArrayBuffer(this.analyser.fftSize));
       this.analyserFloat = new Float32Array(new ArrayBuffer(this.analyser.fftSize * 4));
@@ -175,7 +185,34 @@ export class AudioEngine {
 
   setMuted(value: boolean): void {
     this.muted = value;
-    if (this.muteGain && this.ctx) this.muteGain.gain.setValueAtTime(value ? 0 : 1, this.ctx.currentTime);
+    this.applyGain();
+  }
+  private applyGain(): void {
+    if (this.muteGain && this.ctx)
+      this.muteGain.gain.setTargetAtTime(this.muted ? 0 : this.ducked ? DUCK_GAIN : 1, this.ctx.currentTime, 0.03);
+  }
+  /** Jarvis leiser stellen (vorläufiges Reinreden) bzw. wieder auf volle Lautstärke. */
+  private duck(on: boolean): void {
+    if (this.duckTimer !== null) clearTimeout(this.duckTimer);
+    this.duckTimer = on ? setTimeout(() => this.endTentative(), DUCK_TIMEOUT_MS) : null;
+    if (this.ducked === on) return;
+    this.ducked = on;
+    this.applyGain();
+  }
+  private endTentative(): void {
+    this.tentativeUtterance = null;
+    this.duck(false);
+  }
+  /** Sprach-Türsteher aktiv? Dann wird Jarvis beim Reinreden nur leiser, bis der Server entschieden hat. */
+  setTentativeBarge(on: boolean): void {
+    this.tentativeBarge = on;
+  }
+  isDucked(): boolean {
+    return this.ducked;
+  }
+  /** Server: die vorläufige Äußerung war nicht an Jarvis gerichtet – er spricht in voller Lautstärke weiter. */
+  bargeIgnored(utterance: string | null | undefined): void {
+    if (!utterance || utterance === this.tentativeUtterance || this.tentativeUtterance === null) this.endTentative();
   }
   isMuted(): boolean {
     return this.muted;
@@ -374,13 +411,24 @@ export class AudioEngine {
     this.packetRemainder = [];
     this.finishCause = this.talkMode === "ptt" ? "manual" : "vad";
     this.mark({ name: "vad_start", t: voicedAt, utterance: this.utterance });
-    this.stopPlayback();
-    this.callbacks.stopControl("vad");
-    this.sendJson({ type: "AUDIO_START", utterance_id: this.utterance, sample_rate: 16000 });
+    // Spricht Jarvis hörbar und wird nicht per Taste gesprochen, ist es vorerst nur ein möglicher Zuruf: Er wird leiser,
+    // der Server prüft die Äußerung (Sprach-Türsteher) und stoppt ihn erst bei echter Ansprache.
+    const tentative = this.tentativeBarge && this.talkMode !== "ptt" && this.isAudible() && !this.muted;
+    if (tentative) {
+      this.tentativeUtterance = this.utterance;
+      this.duck(true);
+    } else {
+      this.endTentative();
+      this.stopPlayback();
+      this.callbacks.stopControl("vad");
+    }
+    this.sendJson({ type: "AUDIO_START", utterance_id: this.utterance, sample_rate: 16000, ...(tentative ? { tentative: true } : {}) });
     this.sendPcm(this.preRoll, false);
     this.callbacks.state("listening");
     this.callbacks.log(
-      this.talkMode === "ptt" ? "Push-to-talk: Aufnahme läuft, solange gehalten wird." : "Sprachbeginn: STOP_STREAM sofort gesendet, 400 ms Vorlauf übertragen.",
+      this.talkMode === "ptt" ? "Push-to-talk: Aufnahme läuft, solange gehalten wird."
+        : tentative ? "Sprachbeginn während Jarvis spricht: leiser gestellt, Türsteher prüft die Äußerung."
+        : "Sprachbeginn: STOP_STREAM sofort gesendet, 400 ms Vorlauf übertragen.",
     );
   }
 
@@ -425,6 +473,7 @@ export class AudioEngine {
       type: abort ? "AUDIO_ABORT" : "AUDIO_END",
       utterance_id: id,
     });
+    if (abort && id === this.tentativeUtterance) this.endTentative();
     this.callbacks.state(abort ? "idle" : "transcribing");
     this.callbacks.log(
       abort ? "Aufnahme verworfen." : "Aufnahme beendet; Server-STT folgt.",
@@ -615,6 +664,7 @@ export class AudioEngine {
   }
 
   stopPlayback(): void {
+    this.endTentative();
     if (this.gapTimer !== null) clearTimeout(this.gapTimer);
     this.gapTimer = null;
     this.markLocalStop();
@@ -644,6 +694,7 @@ export class AudioEngine {
     const current = this.gate.current().stream;
     this.gate.invalidate(stream);
     if (stream === null || stream === current) {
+      this.endTentative();
       this.stopNodesOnly();
       this.callbacks.state("idle");
     }
@@ -682,6 +733,7 @@ export class AudioEngine {
 
   close(): void {
     this.closed = true;
+    if (this.duckTimer !== null) clearTimeout(this.duckTimer);
     if (this.recording) this.finish(true);
     this.stopPlayback();
     this.disableMic();

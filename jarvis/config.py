@@ -21,6 +21,7 @@ ENV_ALIASES = {
     "hubspot_token": ["HUBSPOT_TOKEN", "HUBSPOT_ACCESS_TOKEN"],
     "anthropic_key": ["ANTHROPIC_API_KEY"],
     "alphavantage_api_key": ["ALPHAVANTAGE_API_KEY"],
+    "typesafe_api_key": ["TYPESAFE_API_KEY"],
 }
 
 

@@ -100,6 +100,8 @@ export type Settings = {
   stimmen: { id: string; name: string; gruppe?: string }[];
   elevenlabs: boolean; elevenlabs_problem: string | null;
   sprachkern_verfuegbar: boolean; sprachkern_problem: string | null;
+  /** Sprach-Türsteher (TypeSafe): prüft Äußerungen, bevor Jarvis antwortet oder unterbrochen wird. Fehlt bei älterem Server. */
+  tuersteher?: { an: boolean; aktiv: boolean; modell: string; problem: string | null };
   eleven_tts_model: string; eleven_tts_modelle: string[]; google: boolean; hubspot: boolean; demo?: boolean;
   /** Auswahl über alle Anbieter (Anthropic, Moonshot, Ollama) mit Grund, falls nicht eingerichtet. Fehlt bei älterem Server. */
   modell_auswahl?: ModelChoice[]; anbieter?: string;
@@ -311,7 +313,7 @@ export const api = {
   jobs: () => call<{ jobs: Job[] }>("GET", "/api/jobs"),
   automations: () => call<Automations>("GET", "/api/automations"),
   settings: () => call<Settings>("GET", "/api/settings"),
-  saveSettings: (changes: Partial<{ stimme: string; tempo: number; modell: string; eleven_tts_model: string; backup_modell: string;
+  saveSettings: (changes: Partial<{ stimme: string; tempo: number; modell: string; eleven_tts_model: string; backup_modell: string; tuersteher: boolean;
     erinnerungen_an_cloud: boolean; sprache: string; stimme_arabisch: string }>) =>
     call<Settings>("POST", "/api/settings", changes),
   ttsPreview: (text: string, stimme?: string) => call<{ mime: string; audio: string }>("POST", "/api/tts/preview", { text, stimme }),

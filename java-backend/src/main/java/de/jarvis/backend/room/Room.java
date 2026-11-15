@@ -16,9 +16,11 @@ import java.lang.management.ThreadMXBean;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -85,7 +87,7 @@ public final class Room {
     /** Ein gesprochener Abschnitt mit eigener Spracherkennung; Abschnitte werden in Reihenfolge zusammengefügt. */
     private static final class Fragment {
         final UUID id; final CancellationToken token; final long startedNanos;
-        Disposable subscription; String text; String failure; boolean done;
+        Disposable subscription; String text; String failure; boolean done; String aktion; String grund;
         Fragment(UUID id, CancellationToken token) { this.id = id; this.token = token; this.startedNanos = System.nanoTime(); }
     }
     /** Weiterreden innerhalb dieser Zeit (solange Jarvis noch nicht spricht) ergänzt die Frage statt sie abzubrechen. */
@@ -93,6 +95,12 @@ public final class Room {
     private final LinkedHashMap<UUID, Fragment> fragments = new LinkedHashMap<>();
     private String carryText = "";
     private long carryNanos;
+    /** Aufnahmen, die begannen, während Jarvis hörbar sprach: Er läuft leiser weiter, bis der Türsteher entscheidet. */
+    private final Set<UUID> tentative = new HashSet<>();
+    /** Was Jarvis zuletzt gesagt hat (auch Zwischenstand): Kontext für den Sprach-Türsteher. */
+    private String lastAssistantText = "";
+    /** Kontext je Aufnahme, beim Sprachbeginn eingefroren: der Text läuft der hörbaren Wiedergabe sonst voraus. */
+    private final Map<UUID, String> contextAtStart = new LinkedHashMap<>();
     private String currentPrompt;
     private long turnStartedNanos;
     private boolean turnSpeaking;
@@ -525,9 +533,22 @@ public final class Room {
 
     /** Begins microphone capture; earlier fragments keep their recognition running. */
     public synchronized void audioStart(String client, UUID utterance, int sampleRate) {
+        audioStart(client, utterance, sampleRate, false);
+    }
+
+    /**
+     * Begins microphone capture. {@code tentative}: der Browser hört Jarvis noch und hat ihn nur leiser gestellt –
+     * der laufende Zug bleibt, bis der Sprach-Türsteher über die Äußerung entschieden hat.
+     */
+    public synchronized void audioStart(String client, UUID utterance, int sampleRate, boolean tentativeStart) {
         requireOwner(client, "AUDIO_START");
         if (sampleRate != 16_000 || utterance == null) throw new IllegalArgumentException("AUDIO_START ist ungültig");
-        interruptForSpeechLocked();
+        contextAtStart.put(utterance, lastAssistantText);
+        while (contextAtStart.size() > 16) contextAtStart.remove(contextAtStart.keySet().iterator().next());
+        if (tentativeStart) {
+            tentative.add(utterance);
+            traceLocked("barge_tentative", streamId, utterance, null);
+        } else interruptForSpeechLocked();
         audioUtterance = utterance;
         status = "listening";
         emitStateLocked("listening", null, utterance);
@@ -543,6 +564,7 @@ public final class Room {
             oldest.token.cancel();
             if (oldest.subscription != null) oldest.subscription.dispose();
             fragments.remove(oldest.id);
+            if (tentative.remove(oldest.id)) bargeIgnoredLocked(oldest.id, "verdraengt");
         }
         traceLocked("audio_end_received", null, utterance, Map.of("audio_ms", pcm.length / 32));
         Fragment fragment = new Fragment(utterance, new CancellationToken());
@@ -555,11 +577,15 @@ public final class Room {
         // Java hält Fragmente nicht zurück und wiederholt nicht: erster Sendeversuch = Senden.
         traceAtLocked("stt_queued", sentMs, null, utterance, null);
         traceAtLocked("stt_sent", sentMs, null, utterance, null);
-        Mono<String> request = stt.transcribeTimed(pcm.clone(), token)
+        // „Jarvis ist dran“: er spricht (vorläufiges Reinreden) oder seine Antwort wurde für diese Äußerung angehalten.
+        String kontext = contextAtStart.remove(utterance);
+        SttProvider.GateContext gate = new SttProvider.GateContext(kontext != null ? kontext : lastAssistantText,
+                tentative.contains(utterance) || !carryText.isBlank());
+        Mono<String> request = stt.transcribeTimed(pcm.clone(), token, gate)
                 .doOnCancel(token::cancel)
                 .doOnNext(result -> sttTimings(utterance, token, sentMs, result))
+                .doOnNext(result -> fragmentDone(client, utterance, token, result))
                 .map(result -> result.text() == null ? "" : result.text())
-                .doOnNext(text -> fragmentDone(client, utterance, token, text))
                 .doOnError(error -> fragmentFailed(client, utterance, token, error));
         fragment.subscription = request.subscribe(text -> { }, error -> { }, () -> { });
         return request;
@@ -569,6 +595,10 @@ public final class Room {
         requireOwner(client, "AUDIO_ABORT");
         if (utterance != null && audioUtterance != null && !utterance.equals(audioUtterance)) return;
         audioUtterance = null;
+        if (utterance != null && tentative.remove(utterance)) {
+            bargeIgnoredLocked(utterance, "verworfen");
+            if (fragments.isEmpty() && carryText.isEmpty()) return;
+        }
         if (fragments.isEmpty() && carryText.isEmpty()) {
             status = "idle";
             emitStateLocked("idle", null);
@@ -603,6 +633,11 @@ public final class Room {
         requireOwner(client, "AUDIO_END");
         if (utterance != null && audioUtterance != null && !utterance.equals(audioUtterance)) return;
         audioUtterance = null;
+        if (utterance != null && tentative.remove(utterance)) {
+            bargeIgnoredLocked(utterance, "still");  // Jarvis spricht weiter, ohne Fehlermeldung
+            if (!fragments.isEmpty() || !carryText.isEmpty()) dispatchLater(client);
+            return;
+        }
         if (!fragments.isEmpty() || !carryText.isEmpty()) {
             dispatchLater(client);  // stille Zusatzaufnahme: bereits Gesagtes trotzdem beantworten
             return;
@@ -612,15 +647,62 @@ public final class Room {
         emitStateLocked("idle", null);
     }
 
-    private void fragmentDone(String client, UUID utterance, CancellationToken token, String text) {
+    private void fragmentDone(String client, UUID utterance, CancellationToken token, SttProvider.SttResult result) {
         synchronized (this) {
             Fragment fragment = fragments.get(utterance);
             if (fragment == null || fragment.token != token || token.isCancelled()) return;
+            String text = result.text();
             fragment.text = text == null ? "" : text.trim();
             fragment.done = true;
+            fragment.aktion = result.aktion();
+            fragment.grund = result.grund();
             lastSttMs = Math.max(0.001d, (System.nanoTime() - fragment.startedNanos) / 1_000_000.0d);
+            boolean wasTentative = tentative.remove(utterance);
+            // „Ignorieren“ gilt nur für eine Äußerung, die allein steht. Gehört sie zu einer Frage, die schon läuft
+            // (weitere Abschnitte, angehaltene Frage), ist sie deren Fortsetzung und wird mit beantwortet.
+            boolean partOfQuestion = !carryText.isBlank()
+                    || fragments.values().stream().anyMatch(f -> f != fragment);
+            if ("ignorieren".equals(fragment.aktion) && partOfQuestion) fragment.aktion = "antworten";
+            if ("ignorieren".equals(fragment.aktion) || "stoppen".equals(fragment.aktion)) {
+                fragments.remove(utterance);
+                traceLocked("gate_" + fragment.aktion, streamId, utterance, Map.of("grund", Protocol.safe(String.valueOf(fragment.grund), 48)));
+                // Sichtbar machen, warum Jarvis nicht antwortet (ohne den erkannten Text).
+                broadcastLocked(event("GATE", Map.of("utterance_id", utterance.toString(), "aktion", fragment.aktion,
+                        "grund", Protocol.safe(String.valueOf(fragment.grund), 48))));
+                if ("stoppen".equals(fragment.aktion)) {
+                    addLogLocked("info", "Gestoppt auf Zuruf.");
+                    stopCurrentLocked("manual");
+                    // „Stopp“ beendet auch die angehaltene Frage und ihre Abschnitte – nicht aber eine Aufnahme,
+                    // die gerade schon läuft (der Nutzer redet weiter).
+                    for (Fragment f : fragments.values()) {
+                        f.token.cancel();
+                        if (f.subscription != null) f.subscription.dispose();
+                        if (tentative.remove(f.id)) bargeIgnoredLocked(f.id, "gestoppt");
+                    }
+                    fragments.clear();
+                    carryText = "";
+                    if (audioUtterance == null) emitStateLocked("idle", null);
+                    return;
+                }
+                addLogLocked("info", "Nicht an Jarvis gerichtet, ignoriert (" + fragment.grund + ").");
+                if (wasTentative) bargeIgnoredLocked(utterance, "tuersteher");
+                if (audioUtterance == null) {
+                    // Spricht er noch (Antwort wird erzeugt), zeigt der Raum wieder „spricht“, sonst „bereit“.
+                    boolean generating = streamId != null && generationSubscription != null && turnSpeaking;
+                    emitStateLocked(generating ? "speaking" : "idle", generating ? streamId : null);
+                }
+                return;
+            } else if (wasTentative) {
+                stopCurrentLocked("vad");  // echtes Reinreden: jetzt erst unterbrechen
+            }
         }
         dispatchLater(client);
+    }
+
+    /** Vorläufiges Reinreden ohne Folgen: der Browser stellt Jarvis wieder auf volle Lautstärke. */
+    private void bargeIgnoredLocked(UUID utterance, String reason) {
+        broadcastLocked(event("BARGE_IGNORED", Map.of("utterance_id", utterance.toString(), "reason", Protocol.safe(reason, 32))));
+        traceLocked("barge_ignored", streamId, utterance, Map.of("reason", Protocol.safe(reason, 32)));
     }
 
     private void fragmentFailed(String client, UUID utterance, CancellationToken token, Throwable error) {
@@ -630,6 +712,7 @@ public final class Room {
             fragment.text = "";
             fragment.done = true;
             fragment.failure = sttError(error);
+            if (tentative.remove(utterance)) bargeIgnoredLocked(utterance, "stt_fehler");
             traceLocked(error instanceof SttProvider.SttRejected ? "stt_rejected" : "stt_failed", null, utterance,
                     Map.of("message", fragment.failure));
             addLogLocked("warn", "Ein Teil der Aufnahme konnte nicht erkannt werden: " + fragment.failure);
@@ -675,6 +758,7 @@ public final class Room {
         fragments.clear();
         carryText = "";
         audioUtterance = null;
+        tentative.clear();
     }
 
     public synchronized void view(Client client, Map<String, Object> message) {
@@ -713,6 +797,8 @@ public final class Room {
         requireOwner(client, "RESET");
         stopCurrentLocked("reset");
         cancelSttLocked();
+        lastAssistantText = "";  // nach dem Zurücksetzen nichts aus dem alten Gespräch an den Türsteher
+        contextAtStart.clear();
         transcriptHistory.clear();
         logHistory.clear();
         broadcastLocked(event("RESET_DONE", Map.of()));
@@ -796,6 +882,7 @@ public final class Room {
     }
 
     private void addTranscriptLocked(String id, String role, String text, UUID stream, boolean fin) {
+        if ("assistant".equals(role) && text != null && !text.isBlank()) lastAssistantText = text;
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("id", id); item.put("role", role); item.put("text", Protocol.safe(text, maxInputChars));
         item.put("stream_id", stream.toString()); item.put("final", fin);

@@ -27,10 +27,14 @@ class ContinuationTest {
     final Map<Integer, String> texts = new ConcurrentHashMap<>();
     final Map<Integer, Long> delays = new ConcurrentHashMap<>();
     final List<Boolean> cancelled = new CopyOnWriteArrayList<>();
+    /** Entscheidung des Sprach-Türstehers je Aufnahme-Länge (null = keine Prüfung) und die mitgeschickten Kontexte. */
+    final Map<Integer, String> aktionen = new ConcurrentHashMap<>();
+    final List<GateContext> gates = new CopyOnWriteArrayList<>();
     FakeStt() { super(WebClient.builder(), new JarvisProperties()); }
-    @Override public Mono<SttResult> transcribeTimed(byte[] pcm, CancellationToken token) {
+    @Override public Mono<SttResult> transcribeTimed(byte[] pcm, CancellationToken token, GateContext gate) {
       int key = pcm.length;
-      return Mono.just(new SttResult(texts.get(key), 1.0, 2.0)).delayElement(Duration.ofMillis(delays.getOrDefault(key, 5L)))
+      gates.add(gate);
+      return Mono.just(new SttResult(texts.get(key), 1.0, 2.0, aktionen.get(key), aktionen.containsKey(key) ? "test" : null)).delayElement(Duration.ofMillis(delays.getOrDefault(key, 5L)))
           .doOnCancel(() -> cancelled.add(true));
     }
   }
@@ -112,6 +116,132 @@ class ContinuationTest {
     r.transcribe("owner1234", u, PCM);
     waitUntil(() -> prompts.size() == 2);
     assertEquals("Stopp, andere Frage", prompts.get(1));
+  }
+
+  Room speakingRoom(FakeStt stt) {
+    GenerationProvider g = (p, t) -> { prompts.add(p); return Flux.just("Hier ist die Antwort. ").concatWith(Flux.never()); };
+    Room r = room(g, (s, c) -> Flux.just(new byte[] {1, 2}), stt);
+    r.start("owner1234", "Alte Frage");
+    waitUntil(() -> "speaking".equals(r.status()));
+    return r;
+  }
+
+  void pause() { try { Thread.sleep(300); } catch (InterruptedException ignored) { } }
+
+  @Test void vorlaeufigesReinredenOhneAnspracheLaesstJarvisWeiterreden() {
+    FakeStt stt = new FakeStt();
+    stt.texts.put(6400, "Schatz, wo ist der Schlüssel?");
+    stt.aktionen.put(6400, "ignorieren");
+    Room r = speakingRoom(stt);
+    UUID u = UUID.randomUUID();
+    r.audioStart("owner1234", u, 16_000, true);   // Browser hat Jarvis nur leiser gestellt
+    assertEquals(0, r.interrupts(), "vorläufig: noch nicht unterbrochen");
+    r.transcribe("owner1234", u, PCM);
+    pause();
+    assertEquals(List.of("Alte Frage"), prompts);
+    assertEquals(0, r.interrupts(), "Jarvis spricht weiter");
+    assertTrue(stt.gates.get(0).jarvisSpricht());
+    assertTrue(stt.gates.get(0).kontext().contains("Hier ist die Antwort"), "Kontext = was Jarvis gerade sagt");
+  }
+
+  @Test void vorlaeufigesReinredenMitAnspracheUnterbrichtUndBeantwortet() {
+    FakeStt stt = new FakeStt();
+    stt.texts.put(6400, "Nein, nimm lieber Donnerstag");
+    stt.aktionen.put(6400, "antworten");
+    Room r = speakingRoom(stt);
+    UUID u = UUID.randomUUID();
+    r.audioStart("owner1234", u, 16_000, true);
+    r.transcribe("owner1234", u, PCM);
+    waitUntil(() -> prompts.size() == 2);
+    assertEquals("Nein, nimm lieber Donnerstag", prompts.get(1));
+    assertEquals(1, r.interrupts());
+  }
+
+  @Test void stoppWunschHaeltNurAn() {
+    FakeStt stt = new FakeStt();
+    stt.texts.put(6400, "Danke, das reicht mir");
+    stt.aktionen.put(6400, "stoppen");
+    Room r = speakingRoom(stt);
+    UUID u = UUID.randomUUID();
+    r.audioStart("owner1234", u, 16_000, true);
+    r.transcribe("owner1234", u, PCM);
+    waitUntil(() -> r.interrupts() == 1);
+    pause();
+    assertEquals(List.of("Alte Frage"), prompts, "keine neue Antwort auf „Danke, das reicht“");
+    assertEquals("idle", r.status());
+  }
+
+  @Test void ignorierteAeusserungOhneLaufendeAntwortStelltNichtsAn() {
+    FakeStt stt = new FakeStt();
+    stt.texts.put(6400, "Boss, Beginn, Boss.");
+    stt.aktionen.put(6400, "ignorieren");
+    Room r = room(thinkingForever(), (s, c) -> Flux.empty(), stt);
+    UUID u = UUID.randomUUID();
+    r.audioStart("owner1234", u, 16_000);
+    r.transcribe("owner1234", u, PCM);
+    pause();
+    assertTrue(prompts.isEmpty());
+    assertEquals("idle", r.status());
+    assertFalse(stt.gates.get(0).jarvisSpricht());
+  }
+
+  @Test void stoppWaehrendJarvisDenktStelltDieFrageNichtNeu() {
+    FakeStt stt = new FakeStt();
+    stt.texts.put(6400, "Stopp");
+    stt.aktionen.put(6400, "stoppen");
+    Room r = room(thinkingForever(), (s, c) -> Flux.empty(), stt);
+    r.start("owner1234", "Erklär mir alles über Steuern");
+    UUID u = UUID.randomUUID();
+    r.audioStart("owner1234", u, 16_000);          // nicht vorläufig: er denkt noch, Antwort wird angehalten
+    r.transcribe("owner1234", u, PCM);
+    pause();
+    assertEquals(List.of("Erklär mir alles über Steuern"), prompts, "angehaltene Frage wird nicht erneut gestellt");
+    assertTrue(stt.gates.get(0).jarvisSpricht(), "Jarvis war dran");
+  }
+
+  @Test void fortsetzungEinerAngehaltenenFrageWirdNieAlleinVerworfen() {
+    FakeStt stt = new FakeStt();
+    stt.texts.put(6400, "und morgen?");
+    stt.aktionen.put(6400, "ignorieren");          // allein klingt der Satzrest unklar
+    Room r = room(thinkingForever(), (s, c) -> Flux.empty(), stt);
+    r.start("owner1234", "Wie wird das Wetter heute");
+    UUID u = UUID.randomUUID();
+    r.audioStart("owner1234", u, 16_000);          // er denkt noch: Frage wird angehalten und ergänzt
+    r.transcribe("owner1234", u, PCM);
+    waitUntil(() -> prompts.size() == 2);
+    assertEquals("Wie wird das Wetter heute und morgen?", prompts.get(1));
+  }
+
+  @Test void stoppLaesstEineSchonLaufendeAufnahmeLeben() {
+    FakeStt stt = new FakeStt();
+    byte[] stopp = new byte[6400], weiter = new byte[12800];
+    stt.texts.put(stopp.length, "Stopp");
+    stt.aktionen.put(stopp.length, "stoppen");
+    stt.delays.put(stopp.length, 100L);
+    stt.texts.put(weiter.length, "Was steht morgen an?");
+    stt.aktionen.put(weiter.length, "antworten");
+    Room r = speakingRoom(stt);
+    UUID a = UUID.randomUUID(), b = UUID.randomUUID();
+    r.audioStart("owner1234", a, 16_000, true);
+    r.transcribe("owner1234", a, stopp);
+    r.audioStart("owner1234", b, 16_000, true);   // redet schon weiter, während „Stopp“ noch erkannt wird
+    waitUntil(() -> r.interrupts() == 1);
+    r.transcribe("owner1234", b, weiter);
+    waitUntil(() -> prompts.size() == 2);
+    assertEquals("Was steht morgen an?", prompts.get(1));
+    assertTrue(stt.gates.get(1).jarvisSpricht(), "zweite Aufnahme bleibt als Reinreden markiert");
+  }
+
+  @Test void zuruecksetzenVergisstDenKontext() {
+    FakeStt stt = new FakeStt();
+    stt.texts.put(6400, "Hallo");
+    Room r = speakingRoom(stt);
+    r.reset("owner1234");
+    UUID u = UUID.randomUUID();
+    r.audioStart("owner1234", u, 16_000);
+    r.transcribe("owner1234", u, PCM);
+    waitUntil(() -> !stt.gates.isEmpty());
+    assertEquals("", stt.gates.get(0).kontext());
   }
 
   @Test void abschnitteBleibenInReihenfolgeAuchWennDieErkennungUmgekehrtFertigWird() {

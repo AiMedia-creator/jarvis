@@ -1,5 +1,10 @@
 # Jarvis V3 – zusammengeführtes Projekt
 
+> **Neu (15.11.2026): Sprach-Türsteher mit TypeSafe.** Im Command Center prüft Jev (TypeSafe) jede gesprochene
+> Äußerung: Fernseher, Gespräche im Raum und Störgeräusche lösen keine Antwort mehr aus, „Stopp“ hält Jarvis nur an,
+> und beim Reinreden wird er erst leiser, bis feststeht, ob du ihn meinst. Braucht `TYPESAFE_API_KEY`, sonst bleibt
+> alles wie bisher. Details: `docs/SPRACH-TUERSTEHER.md`.
+
 > **Neu (11.11.2026): austauschbares Gehirn, Google Sheets, Dateianhänge, Browser.** Modell und Anbieter wählbar
 > (Claude Opus/Sonnet/Haiku 5.5 über Anthropic, Kimi über die Moonshot-API, lokale Modelle über Ollama), Google Sheets
 > lesen/erstellen/bearbeiten (Bearbeiten nur mit Freigabe), Dateien (PDF, TXT, CSV, DOCX, XLSX, Bilder) im Command

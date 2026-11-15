@@ -141,10 +141,32 @@ export type CommandCenterProps = {
   stage?: boolean;
   /** Was Jarvis aus dem letzten Befehl verstanden hat (z. B. „Karte öffnen · Berlin“). */
   understood?: string | null;
+  /** Letzte Entscheidung des Sprach-Türstehers ohne Antwort (ignoriert oder nur gestoppt). */
+  gateNote?: { aktion: "ignorieren" | "stoppen"; grund: string; t: number } | null;
 };
 
 type PendingFile = { key: string; name: string; size: number; status: "laedt" | "bereit" | "fehler"; id?: string; info?: string };
 const fmtSize = (n: number) => n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1024 / 1024).toFixed(1).replace(".", ",")} MB`;
+
+/** Wie lange der Hinweis des Sprach-Türstehers stehen bleibt. */
+const GATE_NOTE_MS = 6000;
+/** Gründe des Türstehers in Klartext (unbekannte Gründe werden wörtlich gezeigt). */
+const GATE_TEXT: Record<string, string> = {
+  "unverständlich": "klang nach Störgeräusch, nicht nach einem Satz",
+  "nicht an Jarvis": "klang nicht an Jarvis gerichtet (Raum, Telefon, Fernseher)",
+  "nur Rückmeldung": "nur eine Rückmeldung wie „mhm“ – Jarvis spricht weiter",
+  "unklar, ob an Jarvis": "unklar, ob du Jarvis meintest – sag „Jarvis, …“ oder drück Esc",
+  "stopp": "du wolltest, dass Jarvis aufhört",
+  "stopp-wort": "du wolltest, dass Jarvis aufhört",
+  "stopp ohne laufende Antwort": "„Stopp“ ohne laufende Antwort",
+  "leer": "nichts erkannt",
+};
+/** Zeitpunkt in der performance-Uhr, zu dem der Hinweis erschien (für den Vergleich mit `now`). */
+const shownAt = new WeakMap<object, number>();
+const gateNoteShownAt = (note: object) => {
+  if (!shownAt.has(note)) shownAt.set(note, performance.now());
+  return shownAt.get(note)!;
+};
 
 /** Einstiege für ein leeres Gespräch: füllen nur das Feld. */
 const STARTERS = [
@@ -162,7 +184,7 @@ export function CommandCenter({
   prefs = { pause: 1.2, barge: "frei", talkMode: "frei" }, onPrefs = () => undefined, onReset = () => undefined,
   platform = null, jobs = null, jobsError = null, busyJob = null,
   onOpenJob = () => undefined, onCancelJob = () => undefined, focusSignal = 0, room, memoryUse = {}, onOpenMemory,
-  stage = false, understood = null, voiceNotice = null,
+  stage = false, understood = null, voiceNotice = null, gateNote = null,
 }: CommandCenterProps) {
   const toolLabel = (name: string) => platform?.faehigkeiten.find((c) => c.name === name)?.titel ?? name;
   const realtimeMode = voiceMode === "echtzeit";
@@ -175,6 +197,9 @@ export function CommandCenter({
   const [text, setText] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   useEffect(() => { if (voiceNotice) setNotice(voiceNotice); }, [voiceNotice]);
+  // Vorläufiges Reinreden (leiser statt sofort stoppen) nur, wenn der Sprach-Türsteher wirklich prüft.
+  const gateActive = !!settings?.tuersteher?.aktiv;
+  useEffect(() => { audio?.setTentativeBarge?.(gateActive); }, [audio, gateActive]);
   const [permission, setPermission] = useState<PermissionState | "unbekannt">("unbekannt");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
@@ -446,6 +471,11 @@ export function CommandCenter({
                   : realtimeMode && orbState === "hoert" ? "Ich höre zu, Master. Tippe auf den Kreis, um das Gespräch zu beenden." : undefined}
                 toggleLabel={connecting ? "Verbindungsaufbau abbrechen" : realtimeMode ? "Echtzeit-Gespräch beenden" : micActive ? "Mikrofon ausschalten" : "Mikrofon einschalten und sprechen"} />
               {understood && <p className="cc-understood" role="status"><b>Verstanden:</b> {understood}</p>}
+              {gateNote && now - gateNoteShownAt(gateNote) < GATE_NOTE_MS && (
+                <p className="cc-understood cc-gate" role="status">
+                  <b>{gateNote.aktion === "stoppen" ? "Angehalten:" : "Nicht beantwortet:"}</b> {GATE_TEXT[gateNote.grund] ?? gateNote.grund}
+                </p>
+              )}
             </div>
           )}
           <section className="cc-thread" ref={threadRef} aria-label="Gespräch mit Jarvis" tabIndex={0}
@@ -505,6 +535,12 @@ export function CommandCenter({
                     <span className="cc-fact"><b>Gehirn</b>{jarvis ? `${jarvis.modell}${jarvis.status !== "bereit" ? ` · ${jarvis.hinweis || "nicht eingerichtet"}` : ""}` : "–"}</span>
                     <span className="cc-fact" title={speech?.stimme_hinweis || undefined}><b>Stimme</b>{speech ? `${speech.stimme} · ${speech.stimme_anbieter}${speech.stimme_modell ? ` (${speech.stimme_modell})` : ""}` : "–"}</span>
                     <span className="cc-fact"><b>Erkennung</b>{speech?.erkennung ?? "–"}</span>
+                    {settings?.tuersteher && (
+                      <span className={`cc-fact ${settings.tuersteher.an && !settings.tuersteher.aktiv ? "warn" : ""}`}
+                        title={settings.tuersteher.problem ?? undefined}>
+                        <b>Türsteher</b>{settings.tuersteher.aktiv ? `TypeSafe · ${settings.tuersteher.modell}` : settings.tuersteher.an ? "nicht aktiv (Schlüssel fehlt)" : "aus"}
+                      </span>
+                    )}
                   </>
                 )}
                 <span className={`cc-fact ${permission === "denied" ? "warn" : ""}`}><b>Mikrofon</b>{realtimeMode ? "ElevenLabs-Sitzung" : micOn ? (ptt ? "an · Push-to-talk" : "an") : "aus"}{permission === "denied" ? " · blockiert" : permission === "prompt" ? " · noch nicht erlaubt" : ""}</span>

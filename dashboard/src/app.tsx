@@ -207,6 +207,8 @@ export function App() {
   const [connected, setConnected] = useState(false);
   const [micOn, setMicOn] = useState(false);
   const [forwarded, setForwarded] = useState<string | null>(null);
+  // Letzte Entscheidung des Sprach-Türstehers, die keine Antwort auslöste (ignoriert / nur gestoppt).
+  const [gateNote, setGateNote] = useState<{ aktion: "ignorieren" | "stoppen"; grund: string; t: number } | null>(null);
   const audioWsRef = useRef<WebSocket | null>(null);
   const audioRef = useRef<AudioEngine | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -489,6 +491,14 @@ export function App() {
               `Stream gestoppt (${message.reason}, ACK ${metric(message.ack_ms, "ms")}).`,
             );
             break;
+          case "GATE":
+            if (message.aktion === "ignorieren" || message.aktion === "stoppen")
+              setGateNote({ aktion: message.aktion, grund: typeof message.grund === "string" ? message.grund : "", t: Date.now() });
+            break;
+          case "BARGE_IGNORED":
+            // Sprach-Türsteher: der Zuruf war nicht an Jarvis gerichtet – volle Lautstärke, er spricht weiter.
+            audioRef.current?.bargeIgnored(typeof message.utterance_id === "string" ? message.utterance_id : null);
+            break;
           case "RESET_DONE":
             setTranscripts([]);
             setMemoryUse({});
@@ -709,7 +719,7 @@ export function App() {
             voiceMode={voiceMode} onStartRealtime={startRealtime} onStopRealtime={stopRealtime} getRealtime={getRealtime}
             prefs={voicePrefs} onPrefs={setVoicePrefs} onReset={resetConversation} room={room} memoryUse={memoryUse}
             mapQuery={current === "world" ? viewModel.query ?? "" : null} onCloseMap={back} onDashboard={toDashboard}
-            forwarded={forwarded} demo={config.demo} voiceNotice={voiceNotice}
+            forwarded={forwarded} demo={config.demo} voiceNotice={voiceNotice} gateNote={gateNote}
           />
         </Suspense>
         {alert && <div className="ws-alert" role="status">{alert}</div>}

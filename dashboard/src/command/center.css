@@ -62,6 +62,7 @@
 .cc-memory-used .cc-link { padding: 0; font-size: 12.5px; }
 .cc-check { flex-direction: row !important; align-items: center; gap: 8px !important; }
 .cc-check input { width: 18px; height: 18px; }
+.cc-check > span > .cc-hint { display: block; margin-top: 2px; }
 .cc-thread-mark { margin: 4px 0 0; display: flex; align-items: center; gap: 10px; color: var(--cc-muted); font-size: 12px; font-weight: 600; }
 .cc-thread-mark::before, .cc-thread-mark::after { content: ""; flex: 1; height: 1px; background: var(--cc-line); }
 .cc-thread-empty { margin: auto 0; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }

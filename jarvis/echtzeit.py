@@ -57,7 +57,14 @@ def status(model_id: str | None = None) -> dict:
             "stimme_arabisch": config.get("stimme_arabisch", sprache.STIMME_ARABISCH),
             "stimmen": tts.voices(), "name": config.get("owner_name", "Omar"),
             "sprachkern_verfuegbar": eleven_available(), "sprachkern_problem": eleven_problem(),
-            "eleven_tts_model": config.get("eleven_tts_model") or "eleven_flash_v2_5", "eleven_tts_modelle": TTS_MODELS}
+            "eleven_tts_model": config.get("eleven_tts_model") or "eleven_flash_v2_5", "eleven_tts_modelle": TTS_MODELS,
+            "tuersteher": _tuersteher()}
+
+
+def _tuersteher() -> dict:
+    from . import sprachpruefung
+
+    return sprachpruefung.status()
 
 
 def _memories_to_cloud() -> bool:
@@ -91,6 +98,12 @@ def save_settings(data: dict, set_model: Callable[[str], None] | None = None,
         if v not in {x["id"] for x in tts.voices()}:
             raise ValueError("unbekannte Stimme")
         config.save("stimme_arabisch", None if v == sprache.STIMME_ARABISCH else v)
+    if "tuersteher" in data:
+        if not isinstance(data["tuersteher"], bool):
+            raise ValueError("tuersteher muss true oder false sein")
+        from . import sprachpruefung
+
+        sprachpruefung.einschalten(data["tuersteher"])
     if "tempo" in data:
         config.save("voice_speed", f"{max(0.8, min(1.3, float(data['tempo']))):.2f}")
     if "eleven_tts_model" in data:

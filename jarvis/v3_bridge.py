@@ -985,6 +985,7 @@ class Bridge:
             raise web.HTTPTooManyRequests(text="Lokale Spracherkennung ist ausgelastet")
         reader = await request.multipart()
         capture = None
+        felder: dict[str, str] = {}  # optionale Angaben für den Sprach-Türsteher (pruefen, kontext, jarvis_spricht)
         count = 0
         while part := await reader.next():
             count += 1
@@ -993,7 +994,8 @@ class Bridge:
             chunks, total = [], 0
             while chunk := await part.read_chunk():
                 total += len(chunk)
-                maximum = 1_920_044 if part.name == "file" else 1024  # bis 60 s Sprache
+                # bis 60 s Sprache; der Kontext (was Jarvis sagt) darf länger sein als die übrigen Felder
+                maximum = 1_920_044 if part.name == "file" else 4096 if part.name == "kontext" else 1024
                 if total > maximum:
                     raise web.HTTPRequestEntityTooLarge(max_size=maximum, actual_size=total)
                 chunks.append(chunk)
@@ -1001,6 +1003,8 @@ class Bridge:
                 if capture is not None:
                     raise web.HTTPBadRequest(text="Nur eine Aufnahme erlaubt")
                 capture = b"".join(chunks)
+            elif part.name in ("pruefen", "kontext", "jarvis_spricht"):
+                felder[part.name] = b"".join(chunks).decode("utf-8", "replace")
         if not capture:
             raise web.HTTPBadRequest(text="WAV-Aufnahme fehlt")
         try:
@@ -1054,9 +1058,21 @@ class Bridge:
             raise web.HTTPServiceUnavailable(text="Lokales Whisper-Modell nicht verfügbar; Installation und Cache prüfen")
         # Gemessene Zeiten für die Regie-Kette: Warten in der Bridge (Upload, Prüfung, Slot) und reines Dekodieren.
         start, end = timing.get("start", received), timing.get("end", time.monotonic())
-        return web.json_response({"text": text, "sprache": timing.get("sprache"),
-                                  "bridge_wait_ms": round(max(0.0, start - received) * 1000, 1),
-                                  "decode_ms": round(max(0.0, end - start) * 1000, 1)})
+        body = {"text": text, "sprache": timing.get("sprache"),
+                "bridge_wait_ms": round(max(0.0, start - received) * 1000, 1),
+                "decode_ms": round(max(0.0, end - start) * 1000, 1)}
+        if felder.get("pruefen") == "1":
+            # Sprach-Türsteher (TypeSafe): antworten, nur aufhören oder ignorieren. Außerhalb des Whisper-Slots.
+            from . import sprachpruefung
+            spricht = felder.get("jarvis_spricht") == "1"
+            try:  # Gesamtgrenze: die Antwort wartet höchstens so lange auf den Türsteher
+                urteil = await asyncio.wait_for(asyncio.to_thread(
+                    sprachpruefung.pruefe, text, felder.get("kontext", "")[:2000], spricht), sprachpruefung.ZEITLIMIT_S + 0.5)
+            except asyncio.TimeoutError:
+                urteil = {"aktion": sprachpruefung.ANTWORTEN, "grund": "typesafe-fehler: Zeitlimit", "quelle": "fehler", "ms": None}
+            body.update({"aktion": urteil["aktion"], "grund": urteil["grund"], "pruef_quelle": urteil["quelle"],
+                         "pruef_ms": urteil["ms"]})
+        return web.json_response(body)
 
     async def synthesize(self, request):
         from . import tts

@@ -210,3 +210,54 @@ async def test_bridge_erkennt_aegyptisch_im_automatikmodus_mit_dem_genaueren_mod
         assert aufrufe == [("small", "ar", 3, "إزيك ")]  # Niederländisch wird nie gewählt
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_bridge_transcribe_liefert_entscheidung_des_tuerstehers(tmp_path, monkeypatch):
+    """Mit pruefen=1 hängt die Bridge die Entscheidung des Sprach-Türstehers an; Kontext und Lage werden durchgereicht."""
+    import io
+    import wave
+    from jarvis import sprachpruefung
+    monkeypatch.setenv('JARVIS_DATA_DIR', str(tmp_path))
+    aufrufe = []
+
+    class Seg:
+        text = ' Schatz, wo ist der Schlüssel? '
+        avg_logprob = -0.2
+
+    class Fake:
+        def detect_language(self, audio):
+            return "de", 0.9, [("de", 0.9)]
+        def transcribe(self, audio, **kwargs):
+            return [Seg()], None
+
+    class B(v3_bridge.Bridge):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.whisper_models = {"base": Fake(), "small": Fake()}
+
+    def pruefe(text, kontext, spricht):
+        aufrufe.append((text, kontext, spricht))
+        return {"aktion": "ignorieren", "grund": "nicht an Jarvis", "quelle": "typesafe", "werte": {}, "ms": 12}
+
+    monkeypatch.setattr(v3_bridge, 'Bridge', B)
+    monkeypatch.setattr(sprachpruefung, 'pruefe', pruefe)
+    capture = io.BytesIO()
+    with wave.open(capture, 'wb') as wav:
+        wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(16000)
+        wav.writeframes(b'\x00\x00' * 3200)
+    client = TestClient(TestServer(v3_bridge.create_app(TOKEN, demo=False)))
+    await client.start_server()
+    try:
+        for felder, erwartet in (({}, None), ({"pruefen": "1", "kontext": "Du hast heute drei Termine", "jarvis_spricht": "1"}, "ignorieren")):
+            form = FormData()
+            form.add_field('file', capture.getvalue(), filename='capture.wav', content_type='audio/wav')
+            for k, v in felder.items():
+                form.add_field(k, v)
+            response = await client.post('/internal/transcribe', data=form, headers={'Authorization': 'Bearer ' + TOKEN})
+            body = await response.json()
+            assert response.status == 200 and body.get("aktion") == erwartet
+        assert aufrufe == [("Schatz, wo ist der Schlüssel?", "Du hast heute drei Termine", True)]
+        assert body["grund"] == "nicht an Jarvis" and body["pruef_ms"] == 12
+    finally:
+        await client.close()

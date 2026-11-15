@@ -28,7 +28,7 @@ class TraceTest {
   static final class TimedStt extends SttProvider {
     final Mono<SttResult> answer;
     TimedStt(Mono<SttResult> answer) { super(WebClient.builder(), new JarvisProperties()); this.answer = answer; }
-    @Override public Mono<SttResult> transcribeTimed(byte[] pcm, CancellationToken token) { return answer; }
+    @Override public Mono<SttResult> transcribeTimed(byte[] pcm, CancellationToken token, GateContext gate) { return answer; }
   }
 
   Room room(GenerationProvider g, TtsProvider tts, SttProvider stt) {

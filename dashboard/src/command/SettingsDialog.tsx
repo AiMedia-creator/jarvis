@@ -179,10 +179,25 @@ export function SettingsDialog({ open, onClose, prefs, onPrefs, settings, onSett
             </label>
             <label>Reinreden, während Jarvis spricht (Studio)
               <select value={prefs.barge} onChange={(e) => set({ barge: e.target.value === "aus" ? "aus" : "frei" })}>
-                <option value="frei">Frei – Sprechen stoppt ihn sofort</option>
+                <option value="frei">{settings.tuersteher?.aktiv ? "Frei – Sprechen stellt ihn leiser, der Türsteher entscheidet" : "Frei – Sprechen stoppt ihn sofort"}</option>
                 <option value="aus">Aus – erst nach seiner Antwort zuhören</option>
               </select>
             </label>
+            {settings.tuersteher && (
+              <label className="cc-check">
+                <input type="checkbox" checked={settings.tuersteher.an} disabled={disabled}
+                  onChange={(e) => void save({ tuersteher: e.target.checked }, "Sprach-Türsteher")} />
+                <span>Sprach-Türsteher (TypeSafe)
+                  <span className="cc-hint">
+                    {settings.tuersteher.problem
+                      ? `Nicht aktiv: ${settings.tuersteher.problem}. Ohne Schlüssel antwortet Jarvis wie bisher auf alles.`
+                      : settings.tuersteher.an
+                        ? `Aktiv (${settings.tuersteher.modell}). Prüft jede gesprochene Äußerung: Fernseher, Gespräche im Raum und Kauderwelsch werden ignoriert, „Stopp“ hält Jarvis nur an. Gesendet werden nur die Äußerung und Jarvis' letzter Satz.`
+                        : "Aus. Jarvis antwortet auf jede erkannte Äußerung und stoppt bei jedem Reinreden."}
+                  </span>
+                </span>
+              </label>
+            )}
             <label>Sprechmodus (Studio)
               <select value={prefs.talkMode} onChange={(e) => set({ talkMode: e.target.value === "ptt" ? "ptt" : "frei" })}>
                 <option value="frei">Freihändig – einfach reden</option>

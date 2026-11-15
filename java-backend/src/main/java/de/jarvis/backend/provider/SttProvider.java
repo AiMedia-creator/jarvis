@@ -23,8 +23,21 @@ public class SttProvider {
         this.props = props;
     }
 
-    /** Erkannter Text plus die von der Bridge gemessenen Zeiten (null, wenn der Dienst keine liefert). */
-    public record SttResult(String text, Double bridgeWaitMs, Double decodeMs) { }
+    /**
+     * Erkannter Text plus die von der Bridge gemessenen Zeiten (null, wenn der Dienst keine liefert) und die Entscheidung
+     * des Sprach-Türstehers (antworten, stoppen, ignorieren; null = keine Prüfung, wie bisher antworten).
+     */
+    public record SttResult(String text, Double bridgeWaitMs, Double decodeMs, String aktion, String grund) {
+        public SttResult(String text, Double bridgeWaitMs, Double decodeMs) { this(text, bridgeWaitMs, decodeMs, null, null); }
+    }
+
+    /** Was der Türsteher zur Einordnung braucht: was Jarvis gerade sagt bzw. zuletzt gesagt hat, und ob er spricht. */
+    public record GateContext(String kontext, boolean jarvisSpricht) {
+        public static final GateContext NONE = new GateContext("", false);
+    }
+
+    /** Höchstens so viele Bytes Kontext (UTF-8); die Bridge nimmt bis 4096 an. */
+    static final int MAX_CONTEXT_BYTES = 3000;
 
     /** Die Bridge lehnt ab, weil gerade eine andere Aufnahme erkannt wird (HTTP 429). */
     public static final class SttRejected extends IllegalStateException {
@@ -36,6 +49,10 @@ public class SttProvider {
     }
 
     public Mono<SttResult> transcribeTimed(byte[] pcm, CancellationToken token) {
+        return transcribeTimed(pcm, token, GateContext.NONE);
+    }
+
+    public Mono<SttResult> transcribeTimed(byte[] pcm, CancellationToken token, GateContext gate) {
         return Mono.defer(() -> {
             token.checkpoint();
             if (pcm.length > 1_920_000 || pcm.length < 6400 || pcm.length % 640 != 0) {
@@ -52,6 +69,12 @@ public class SttProvider {
             form.add("file", capture);
             form.add("model", "whisper-1");
             form.add("language", "de");
+            // Kontext nur an die lokale Jarvis-Bridge: ein externer Erkennungsdienst bekommt nur die Aufnahme.
+            if (isLocal(props.getSttUrl())) {
+                form.add("pruefen", "1");
+                form.add("jarvis_spricht", gate.jarvisSpricht() ? "1" : "0");
+                form.add("kontext", tail(gate.kontext(), MAX_CONTEXT_BYTES));
+            }
             var request = client.post().uri(props.getSttUrl()).contentType(MediaType.MULTIPART_FORM_DATA);
             if (props.getSttApiKey() != null && !props.getSttApiKey().isBlank()) {
                 request.header("Authorization", "Bearer " + props.getSttApiKey());
@@ -65,7 +88,8 @@ public class SttProvider {
                     .map(node -> {
                         String text = node.path("text").asText("");
                         if (text.length() > 8000) throw new IllegalStateException("STT-Antwort ist zu lang.");
-                        return new SttResult(text.trim(), measured(node, "bridge_wait_ms"), measured(node, "decode_ms"));
+                        return new SttResult(text.trim(), measured(node, "bridge_wait_ms"), measured(node, "decode_ms"),
+                                aktion(node.path("aktion").asText(null)), node.path("grund").asText(null));
                     }).filter(result -> !token.isCancelled());
         }).doOnCancel(token::cancel);
     }
@@ -75,6 +99,28 @@ public class SttProvider {
         if (status == 503) return "Lokales Whisper-Modell nicht verfügbar; Installation und Cache prüfen.";
         if (status == 401 || status == 403) return "Spracherkennung lehnt die Anfrage ab (Bridge-Zugang prüfen).";
         return "STT-Anfrage fehlgeschlagen (HTTP " + status + ").";
+    }
+
+    static boolean isLocal(String url) {
+        try {
+            String host = java.net.URI.create(url).getHost();
+            return "127.0.0.1".equals(host) || "localhost".equals(host) || "[::1]".equals(host) || "::1".equals(host);
+        } catch (RuntimeException error) {
+            return false;
+        }
+    }
+
+    /** Nur bekannte Aktionen; alles andere gilt als „keine Prüfung“ (antworten). */
+    static String aktion(String value) {
+        return "antworten".equals(value) || "stoppen".equals(value) || "ignorieren".equals(value) ? value : null;
+    }
+
+    /** Das Ende des Textes, höchstens maxBytes UTF-8 (das zuletzt Gesagte zählt). */
+    static String tail(String text, int maxBytes) {
+        if (text == null) return "";
+        String value = text.length() > maxBytes ? text.substring(text.length() - maxBytes) : text;
+        while (value.getBytes(StandardCharsets.UTF_8).length > maxBytes) value = value.substring(Math.min(value.length(), 64));
+        return value;
     }
 
     private static Double measured(JsonNode node, String field) {
