@@ -9,7 +9,8 @@ from jarvis import sprachpruefung as S
 
 
 def werte(**kw):
-    base = {"verstaendlich": 0.95, "an_jarvis": 0.9, "stopp_wunsch": 0.05, "mehr_als_stopp": 0.1, "nur_rueckmeldung": 0.05}
+    base = {"verstaendlich": 0.95, "sendung": 0.05, "an_jarvis": 0.9, "stopp_wunsch": 0.05, "mehr_als_stopp": 0.1,
+            "nur_rueckmeldung": 0.05}
     base.update(kw)
     return base
 
@@ -18,7 +19,10 @@ def werte(**kw):
     (werte(), False, S.ANTWORTEN),
     (werte(), True, S.ANTWORTEN),
     (werte(verstaendlich=0.1), False, S.IGNORIEREN),                      # Kauderwelsch aus Hintergrundgeräusch
-    (werte(verstaendlich=0.5), False, S.ANTWORTEN),                       # unklar und Jarvis wartet: antworten
+    (werte(verstaendlich=0.5), False, S.IGNORIEREN),                      # unklar: lieber nochmal sagen lassen
+    (werte(verstaendlich=0.5, stopp_wunsch=0.9), True, S.STOPPEN),        # „Stopp“ wirkt auch halb verstanden
+    (werte(sendung=0.55), False, S.IGNORIEREN),                           # Wetteransage, Werbung
+    (werte(sendung=0.55), True, S.IGNORIEREN),
     (werte(an_jarvis=0.1), False, S.IGNORIEREN),                          # Fernseher, Gespräch im Raum
     (werte(an_jarvis=0.1), True, S.IGNORIEREN),
     (werte(an_jarvis=0.5), False, S.ANTWORTEN),                           # wartet: im Zweifel antworten
@@ -35,16 +39,11 @@ def test_wahrheitstabelle(w, spricht, aktion):
 
 
 def test_jede_kombination_hat_ein_ergebnis():
-    stufen = [0.1, 0.5, 0.9]
-    for v in stufen:
-        for a in stufen:
-            for s in stufen:
-                for m in stufen:
-                    for r in stufen:
-                        for spricht in (True, False):
-                            aktion, grund = S.entscheide(dict(verstaendlich=v, an_jarvis=a, stopp_wunsch=s,
-                                                              mehr_als_stopp=m, nur_rueckmeldung=r), spricht)
-                            assert aktion in (S.ANTWORTEN, S.STOPPEN, S.IGNORIEREN) and grund
+    import itertools
+
+    for werte_, spricht in itertools.product(itertools.product([0.1, 0.5, 0.9], repeat=len(S.FRAGEN)), (True, False)):
+        aktion, grund = S.entscheide(dict(zip(S.FRAGEN, werte_)), spricht)
+        assert aktion in (S.ANTWORTEN, S.STOPPEN, S.IGNORIEREN) and grund
 
 
 def test_regeln_ohne_modell():

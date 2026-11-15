@@ -6,13 +6,15 @@ Stand 15.11.2026. Code: `jarvis/sprachpruefung.py` (Fragen, Schwellen, Entscheid
 ## Was er tut
 
 Jede gesprochene Äußerung im Command Center (Studio-Modus) wird nach der Spracherkennung geprüft. Jev von TypeSafe
-beantwortet fünf Ja/Nein-Fragen mit Wahrscheinlichkeiten; die Entscheidung trifft der Code:
+beantwortet sechs Ja/Nein-Fragen mit Wahrscheinlichkeiten; die Entscheidung trifft der Code:
 
 | Urteil (über 0,7 = ja, unter 0,3 = nein) | Ergebnis |
 |---|---|
 | kein verständlicher Satz (Störgeräusch, Echo) | ignorieren |
 | Jarvis antwortet gerade und du willst nur, dass er aufhört | stoppen, keine neue Antwort |
-| nicht an Jarvis gerichtet (Raum, Telefon, Fernseher) | ignorieren |
+| nicht sicher verständlich (Unklar-Band) | ignorieren, Hinweis „bitte nochmal sagen“ |
+| nicht an Jarvis gerichtet (Raum, Telefon) | ignorieren |
+| klingt nach Sendung (Nachrichten, Wetter, Werbung, Film), nicht klar „nein“ | ignorieren |
 | Jarvis spricht und es ist nur „mhm“, „ok“ | ignorieren, er spricht weiter |
 | Jarvis spricht und unklar, ob du ihn meinst | ignorieren (Esc oder „Jarvis, …“ wirken immer) |
 | sonst | antworten |

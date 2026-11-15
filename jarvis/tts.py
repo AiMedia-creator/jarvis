@@ -83,6 +83,28 @@ def speed() -> float:
         return 1.1
 
 
+def _spoken_text(text: str) -> str:
+    code = sprache.text_sprache(text)
+    if code == "ar":
+        return sprache.fuer_sprache(text)
+    if code == "en":
+        return sprache.fuer_englisch(text)
+    from .speech import for_speech
+
+    return for_speech(text)
+
+
+def _edge_fallback(text: str) -> str:
+    """Wählt nach einem ElevenLabs-Ausfall eine lokale Stimme, die zur Ausgabe passt."""
+    code = sprache.text_sprache(text)
+    if code == "ar":
+        selected = str(config.get("stimme_arabisch", sprache.STIMME_ARABISCH) or sprache.STIMME_ARABISCH)
+        return selected if selected.startswith("edge:") else sprache.STIMME_ARABISCH
+    if code == "en":
+        return sprache.STIMME_ENGLISCH
+    return DEFAULT_EDGE
+
+
 _audio_cache: "OrderedDict[tuple, bytes]" = None  # type: ignore[assignment]
 
 
@@ -91,10 +113,8 @@ def synthesize(text: str, voice: str | None = None) -> bytes:
     global _audio_cache
     from collections import OrderedDict
 
-    from .speech import for_speech
-
-    voice = sprache.stimme_fuer(text, voice or current_voice())  # arabischer Satz -> ägyptische Stimme
-    text = sprache.fuer_sprache(text) if sprache.ist_arabisch(text) else for_speech(text)  # nur die Vertonung
+    voice = sprache.stimme_fuer(text, voice or current_voice())
+    text = _spoken_text(text)
     if _audio_cache is None:
         _audio_cache = OrderedDict()
     key = (text, voice, speed())
@@ -124,7 +144,7 @@ def _synthesize(text: str, voice: str | None = None) -> bytes:
                     print(f"[stimme] ElevenLabs-Fehler {code}, kostenlose Stimme für diesen Satz.")
             except Exception as exc:
                 print(f"[stimme] ElevenLabs nicht erreichbar ({exc}), kostenlose Stimme für diesen Satz.")
-        v = DEFAULT_EDGE
+        v = _edge_fallback(text)
     return _edge(text, v.split(":", 1)[1] if v.startswith("edge:") else v)
 
 
@@ -219,10 +239,8 @@ def stream(text: str, voice: str | None = None, cancel: threading.Event | None =
     global eleven_problem, _stream_cache
     from collections import OrderedDict
 
-    from .speech import for_speech
-
-    spoken = sprache.fuer_sprache(text) if sprache.ist_arabisch(text) else for_speech(text)
-    v = sprache.stimme_fuer(text, voice or current_voice())  # arabischer Satz -> ägyptische Stimme
+    spoken = _spoken_text(text)
+    v = sprache.stimme_fuer(text, voice or current_voice())
     key = (spoken, v, speed())
     with _stream_lock:
         if _stream_cache is None:
@@ -263,5 +281,5 @@ def stream(text: str, voice: str | None = None, cancel: threading.Event | None =
                             while len(_stream_cache) > 32:
                                 _stream_cache.popitem(last=False)
             return PCM_MIME, chunks()
-    fallback = DEFAULT_EDGE if v.startswith("eleven:") else v
+    fallback = _edge_fallback(text) if v.startswith("eleven:") else v
     return "audio/mpeg", iter([_edge(spoken, fallback.split(":", 1)[1] if fallback.startswith("edge:") else fallback)])

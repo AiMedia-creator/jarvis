@@ -103,7 +103,7 @@ def boolean(description: str) -> dict:
 
 def all_tools(skills_map, strategy_model: str | None = None) -> list[Tool]:
     from . import extras, google, hubspot, live_kameras, mac, n8n, news, system, telegram, web
-    from .. import mcp_client, orders, research, strategy
+    from .. import jev, mcp_client, orders, research, strategy  # jev liegt in jarvis/jev.py, nicht unter tools/
 
     from .. import approvals
 
@@ -112,6 +112,7 @@ def all_tools(skills_map, strategy_model: str | None = None) -> list[Tool]:
              # aus OpenJarvis uebernommen (nur lesend): Rechner, Wetter, Hacker News, GitHub, PDF, Apple Notizen, Obsidian
              *extras.tools(), *mac.tools(), research.tool(strategy_model),
              *live_kameras.tools()]  # Live-Kameras (Idee + Katalog aus World Monitor)
+    tools.extend(jev.tools())  # Jev/System One ist optional und nur bei expliziter Konfiguration sichtbar.
     from .. import faehigkeiten
 
     # Laufzeitfähigkeiten (Registry): GitHub, Skill-Aufträge, Cloud-Skills; auftrag_anlegen kommt über orders.tools().

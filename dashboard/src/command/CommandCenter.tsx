@@ -154,6 +154,8 @@ const GATE_NOTE_MS = 6000;
 const GATE_TEXT: Record<string, string> = {
   "unverständlich": "klang nach Störgeräusch, nicht nach einem Satz",
   "nicht an Jarvis": "klang nicht an Jarvis gerichtet (Raum, Telefon, Fernseher)",
+  "nicht sicher verstanden": "nicht sicher verstanden – bitte nochmal sagen",
+  "klang nach Sendung": "klang nach Fernseher, Radio oder Werbung",
   "nur Rückmeldung": "nur eine Rückmeldung wie „mhm“ – Jarvis spricht weiter",
   "unklar, ob an Jarvis": "unklar, ob du Jarvis meintest – sag „Jarvis, …“ oder drück Esc",
   "stopp": "du wolltest, dass Jarvis aufhört",

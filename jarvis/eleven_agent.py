@@ -233,6 +233,15 @@ def _voice_id() -> str:
     return v.split(":", 1)[1] if v.startswith("eleven:") else DEFAULT_VOICE
 
 
+def _voice_id_for(language: str) -> str:
+    """Echtzeit-Agenten brauchen ElevenLabs-Voice-IDs; die lokalen Edge-Stimmen sind hier nicht verfügbar."""
+    if language == "ar":
+        voice = str(config.get("stimme_arabisch", "") or "")
+        if voice.startswith("eleven:"):
+            return voice.split(":", 1)[1]
+    return _voice_id()
+
+
 def _greeting() -> str:
     h = datetime.datetime.now().hour
     g = "Guten Morgen" if 4 <= h < 11 else "Guten Tag" if h < 18 else "Guten Abend"
@@ -271,15 +280,39 @@ def conversation_config(tool_ids: list[str], pause: float = 1.0) -> dict:
     eagerness = "eager" if pause < 0.8 else "patient" if pause > 1.6 else "normal"
     keywords = ["Jarvis", "HubSpot", "Gmail", "Telegram", "Deal", "Follow-up"]
     keywords += [k.strip() for k in (config.get("asr_keywords") or "").split(",") if k.strip()]
+    language = sprache.echtzeit_sprache()
+    agent_prompt = {"prompt": _system_prompt(), "llm": LLM.get(config.get("model") or "sonnet", LLM["sonnet"]),
+                    "temperature": 0.4, "tool_ids": tool_ids}
+    language_presets = {}
+    if sprache.aktuell() == "auto":
+        agent_prompt["built_in_tools"] = {
+            "language_detection": {
+                "type": "system", "name": "language_detection",
+                "description": "Switch between German (de), English (en), and Egyptian Arabic (ar) when the user switches language or asks you to.",
+                "params": {"system_tool_type": "language_detection"},
+            }
+        }
+        language_presets = {
+            "en": {"overrides": {
+                "agent": {"first_message": f"Hello, {config.anrede() or config.get('owner_name', 'Master')}. All systems are online. What can I help with?"},
+                "tts": {"voice_id": _voice_id_for("en")},
+                "asr": {"keywords": keywords[:50]},
+            }},
+            "ar": {"overrides": {
+                "agent": {"first_message": f"أهلاً يا {sprache.anrede_arabisch()}، كل الأنظمة شغالة. أقدر أساعدك في إيه؟"},
+                "tts": {"voice_id": _voice_id_for("ar")},
+                "asr": {"keywords": keywords[:50]},
+            }},
+        }
     return {
         "agent": {
             "first_message": sprache.begruessung(_greeting()),
-            "language": sprache.echtzeit_sprache(),
-            "prompt": {"prompt": _system_prompt(), "llm": LLM.get(config.get("model") or "sonnet", LLM["sonnet"]),
-                       "temperature": 0.4, "tool_ids": tool_ids},
+            "language": language,
+            "prompt": agent_prompt,
         },
-        "tts": {"voice_id": _voice_id(), "model_id": config.get("eleven_tts_model") or TTS_MODELS[0]},
+        "tts": {"voice_id": _voice_id_for(language), "model_id": config.get("eleven_tts_model") or TTS_MODELS[0]},
         "turn": {"turn_eagerness": eagerness},
+        "language_presets": language_presets,
         # ElevenLabs beendet Gespräche sonst nach 600 s (Standard von max_duration_seconds). Erlaubt: 60–7200 s.
         "conversation": {"max_duration_seconds": max_duration_seconds()},
         "asr": {"keywords": keywords[:50]},

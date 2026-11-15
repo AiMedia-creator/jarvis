@@ -30,18 +30,29 @@ ANTWORTEN, STOPPEN, IGNORIEREN = "antworten", "stoppen", "ignorieren"
 
 # Name nur am Anfang („Jarvis, …“, „Hey Jarvis …“): ein „Jarvis“ mitten im Fernsehton zählt nicht als Ansprache.
 WAKE = re.compile(r"^\W*(?:(?:hey|hallo|ok(?:ay)?|ya|يا)\W+)?(jarvis|dscharvis|jarwis|javis|jervis|جارفيس)\b", re.I)
-STOP = re.compile(r"^\W*(?:jarvis\W+)?(stopp?|halt|ruhe|sei still|genug|aufh[oö]ren|hör auf|hoer auf)\W*$", re.I)
+STOP = re.compile(r"^\W*(?:jarvis\W+)?(stopp?|stop|halt|ruhe|sei still|genug|enough|quiet|be quiet|hold on|that's enough|aufh[oö]ren|hör auf|hoer auf|اسكت|كفاية|خلاص|بس|استنى)\W*$", re.I)
 
 # --- Fragen an Jev (eine Anfrage, gleiche Zustandsdaten) --------------------------------------------------------
-# Englisch formuliert, die Äußerung bleibt im Original (Deutsch oder Ägyptisch).
+# Englisch formuliert, die Äußerung bleibt im Original (Deutsch, Englisch oder Ägyptisch).
 FRAGEN: dict[str, dict] = {
+    # Live gemessen (15.11.2026): echte Sätze ≥ 0,94, Kauderwelsch aus Störgeräuschen 0,29–0,48.
     "verstaendlich": {
         "type": "noul",
-        "instructions": "Is `heard` a coherent utterance that a person could have said on purpose?",
+        "instructions": "Do the words in `heard` fit together into a meaningful sentence or phrase?",
         "criteria": {
-            "true": "A sentence, question, command or short reply that makes sense, even if casual or ungrammatical",
-            "false": "A string of unrelated words or fragments, such as a speech-recognition error caused by "
-                     "background noise",
+            "true": "A meaningful sentence, question, command or short reply such as 'Yes.' or 'And tomorrow?'",
+            "false": "Words that do not fit together into any meaning, as when speech recognition turns background "
+                     "noise into random words",
+        },
+    },
+    # Fernseher und Radio: echte Befehle ≤ 0,12, Ansagen und Werbung um 0,55.
+    "sendung": {
+        "type": "noul",
+        "instructions": "Does `heard` sound like it comes from a broadcast, such as news, a weather report, an advert "
+                        "or dialogue in a film?",
+        "criteria": {
+            "true": "Phrasing typical of a presenter, reporter, advert or scripted scene",
+            "false": "Phrasing of a person speaking to an assistant or to someone in the room",
         },
     },
     "an_jarvis": {
@@ -132,19 +143,27 @@ def anfrage(gehoert: str, kontext: str, jarvis_spricht: bool) -> dict:
     return {"model": _modell(), "state": zustand(gehoert, kontext, jarvis_spricht), "questions": FRAGEN}
 
 
+_client = None
+
+
+def _verbindung():
+    """Eine offene Verbindung für alle Prüfungen: spart den TLS-Aufbau (gemessen rund 100 ms je Äußerung)."""
+    global _client
+    import httpx
+
+    if _client is None:
+        _client = httpx.Client(timeout=httpx.Timeout(ZEITLIMIT_S, connect=1.5),
+                               limits=httpx.Limits(max_keepalive_connections=2, keepalive_expiry=120))
+    return _client
+
+
 def frage_jev(gehoert: str, kontext: str, jarvis_spricht: bool, client=None) -> dict[str, float]:
     """Eine Anfrage an TypeSafe; liefert {frage: Wahrscheinlichkeit}. Fehler werden geworfen, nie als „nein“ gedeutet."""
     import httpx
 
     body = anfrage(gehoert, kontext, jarvis_spricht)
     headers = {"Authorization": f"Bearer {_schluessel()}", "Content-Type": "application/json"}
-    own = client is None
-    client = client or httpx.Client(timeout=httpx.Timeout(ZEITLIMIT_S, connect=1.5))
-    try:
-        response = client.post(API_URL, json=body, headers=headers)
-    finally:
-        if own:
-            client.close()
+    response = (client or _verbindung()).post(API_URL, json=body, headers=headers)
     if response.status_code >= 400:
         raise RuntimeError(f"TypeSafe HTTP {response.status_code}")
     answers = response.json().get("answers") or {}
@@ -166,6 +185,7 @@ def _stufe(p: float | None) -> str:
 def entscheide(werte: dict[str, float], jarvis_spricht: bool) -> tuple[str, str]:
     """Wahrheitstabelle: Urteile von Jev -> Aktion. Jede Kombination hat ein Ergebnis."""
     v = _stufe(werte.get("verstaendlich"))
+    b = _stufe(werte.get("sendung"))
     a = _stufe(werte.get("an_jarvis"))
     s = _stufe(werte.get("stopp_wunsch"))
     m = _stufe(werte.get("mehr_als_stopp"))
@@ -174,8 +194,14 @@ def entscheide(werte: dict[str, float], jarvis_spricht: bool) -> tuple[str, str]
         return IGNORIEREN, "unverständlich"
     if jarvis_spricht and s == "ja" and m != "ja":
         return STOPPEN, "stopp"
+    if v == "unklar":
+        # Echte Sätze sind fast immer eindeutig verständlich; im Unklar-Band liegen Störgeräusche und verhörte Fetzen.
+        # Lieber nicht antworten und anzeigen, dass es nochmal gesagt werden soll.
+        return IGNORIEREN, "nicht sicher verstanden"
     if a == "nein":
         return IGNORIEREN, "nicht an Jarvis"
+    if b != "nein":
+        return IGNORIEREN, "klang nach Sendung"
     if jarvis_spricht and r == "ja":
         return IGNORIEREN, "nur Rückmeldung"
     if jarvis_spricht and a == "unklar":

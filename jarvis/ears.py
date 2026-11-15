@@ -57,18 +57,18 @@ def clean_transcript(text: str) -> str:
 
 class Ears:
     def __init__(self):
-        self._model = None
+        self._models = {}
 
-    def _whisper(self):
-        if self._model is None:
+    def _whisper(self, size: str | None = None):
+        from . import sprache
+
+        size = size or sprache.whisper_standard()
+        if size not in self._models:
             from faster_whisper import WhisperModel
 
-            from . import sprache
-
-            size = sprache.whisper_standard()
             print(f"[ohr] lade Spracherkennung '{size}' (beim ersten Mal Download) ...")
-            self._model = WhisperModel(size, device="cpu", compute_type="int8")
-        return self._model
+            self._models[size] = WhisperModel(size, device="cpu", compute_type="int8")
+        return self._models[size]
 
     def record(self, max_seconds: float = 20.0, wait_seconds: float = 8.0) -> np.ndarray | None:
         """Wartet auf Sprache, nimmt auf, bis ca. 1 s Stille ist. None = nichts gesprochen."""
@@ -106,11 +106,13 @@ class Ears:
     def transcribe(self, audio: np.ndarray) -> str:
         from . import sprache
         code = sprache.whisper_sprache()
-        if code is None:  # Automatisch: nur zwischen Deutsch und Arabisch wählen
-            code = sprache.waehle(self._whisper().detect_language(audio)[2])
-        segments, _ = self._whisper().transcribe(audio, language=code, beam_size=5, vad_filter=True,
+        standard = sprache.whisper_standard()
+        if code is None:
+            code = sprache.waehle_mehrsprachig(self._whisper(standard).detect_language(audio)[2])
+        model = self._whisper(sprache.whisper_modell(standard, code))
+        segments, _ = model.transcribe(audio, language=code, beam_size=5, vad_filter=True,
                                                  condition_on_previous_text=False,
-                                                 initial_prompt=sprache.whisper_vorgabe(vocabulary_prompt()))
+                                                 initial_prompt=sprache.whisper_vorgabe(vocabulary_prompt(), code))
         return sprach_text(segments)
 
     def listen(self) -> str:

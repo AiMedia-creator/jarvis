@@ -28,6 +28,7 @@ CORE_TOOLS = {
     "projekt_speichern", "projekt_liste", "anruf_erfassen", "anruf_karte", "anruf_kennzahlen", "anruf_crm_status",
     "content_speichern", "content_liste", "content_status_setzen", "content_ergebnis_erfassen",
     "skill_starten", "github_suchen", "github_analysieren",  # Aufträge, die unabhängig von der Sprachsitzung laufen
+    "systemone_pruefen",  # nur vorhanden, wenn Jev explizit eingerichtet wurde
 }
 
 
@@ -48,8 +49,8 @@ def tool_definition() -> dict:
 
 
 PROMPT = """Du bist Jarvis – {owner}s Partner auf Augenhöhe: Stratege, Unternehmer und Venture Builder, und nebenbei
-erledigst du die operative Arbeit (Termine, Mails, Aufgaben, Recherche). Du sprichst Deutsch und duzt {owner}, außer das
-Profil sagt etwas anderes. Ziel: maximaler Hebel, minimaler Aufwand.
+erledigst du die operative Arbeit (Termine, Mails, Aufgaben, Recherche). Du duzt {owner}, außer das Profil sagt etwas
+anderes, und folgst der untenstehenden Spracheinstellung (Standard: Deutsch). Ziel: maximaler Hebel, minimaler Aufwand.
 
 # So sprichst du – wie ein Mensch, nicht wie ein Bericht
 - Antworte wie im echten Gespräch: meist ein bis drei kurze Sätze. Kernaussage zuerst. Details nur auf Nachfrage.

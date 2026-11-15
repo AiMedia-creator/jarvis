@@ -1036,14 +1036,14 @@ class Bridge:
             audio = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768
             deutsch_modell = sprache.whisper_standard()
             sprache_code = sprache.whisper_sprache()
-            if sprache_code is None:  # Automatisch: das schnelle Modell erkennt die Sprache, nur Deutsch oder Arabisch
-                sprache_code = sprache.waehle(modell(deutsch_modell).detect_language(audio)[2])
+            if sprache_code is None:  # Automatisch: zwischen Deutsch, Englisch und Arabisch wählen
+                sprache_code = sprache.waehle_mehrsprachig(modell(deutsch_modell).detect_language(audio)[2])
             arabisch = sprache_code == "ar"
-            # Arabisch: genaueres Modell, Strahlsuche und ägyptischer Vorgabetext; Deutsch bleibt schnell wie bisher.
-            segments, info = modell(sprache.whisper_modell(deutsch_modell) if arabisch else deutsch_modell).transcribe(
+            # Arabisch: genaueres Modell und ägyptischer Vorgabetext; de/en bleiben schnell wie bisher.
+            segments, info = modell(sprache.whisper_modell(deutsch_modell, sprache_code)).transcribe(
                 audio, language=sprache_code, beam_size=3 if arabisch else 1, vad_filter=True,
                 condition_on_previous_text=False,
-                initial_prompt=sprache.VORGABE_MASRI if arabisch else vocabulary_prompt())
+                initial_prompt=sprache.whisper_vorgabe(vocabulary_prompt(), sprache_code))
             timing["sprache"] = sprache_code
             text = sprach_text(segments)[:8000]  # geratene Segmente (Geräusch, Echo-Rest) fallen weg
             timing["end"] = time.monotonic()

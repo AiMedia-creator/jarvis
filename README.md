@@ -137,6 +137,9 @@ Offline-Teststand (V4, 17.10.2026): Python **81 bestanden, 2 optionale Browser-T
   Fenster mit Sprachkreis, Texteingabe und Karte („Zeig Berlin“). Anrede: `JARVIS_ANREDE` (Standard „Master“).
 - **CRM für Kaltakquise** statt „Vertrieb“: `docs/CRM.md`.
 - **Gedächtnis sichern, exportieren, gbrain parallel:** `docs/GEDAECHTNIS-GBRAIN.md`, `python scripts/gedaechtnis.py`.
+- **Obsidian:** lokale, schreibgeschützte Wissensbasis über `obsidian_vault` in `~/.jarvis.json`; Suche und Lesen bleiben vom SQLite-Gedächtnis getrennt.
+- **Deutsch, Englisch und Ägyptisch:** feste Sprachwahl oder automatische Erkennung, mit Sprachwechsel im ElevenLabs-Echtzeitmodus. Details und Grenzen: `docs/SPRACHE-AEGYPTISCH.md`.
+- **Jev / System One:** optionales Werkzeug für ausdrücklich gewünschte Ja/Nein-Prüfungen. `TYPESAFE_API_KEY` setzen und `JARVIS_JEV=an`; der vorhandene Sprach-Türsteher bleibt separat. Details: `docs/JEV.md`.
 - **Browser-Agent (Browser Use), aus per Standard:** `docs/BROWSER-AGENT.md`.
 - Nach einem Update: `./jarvis-start.sh neustart` (lädt die neuen Routen `/api/leads*`).
 - **Ägyptisch (Masri):** Einstellung „Sprache“ (Deutsch, Ägyptisch, Automatisch): `docs/SPRACHE-AEGYPTISCH.md`.

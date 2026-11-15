@@ -90,10 +90,10 @@ export function SettingsDialog({ open, onClose, prefs, onPrefs, settings, onSett
                 <select value={settings.sprache} disabled={disabled} onChange={(e) => void save({ sprache: e.target.value }, "Sprache")}>
                   {settings.sprachen.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
-                <span className="cc-hint" title="Ägyptisch: Kairoer Dialekt (Masri). Automatisch: Jarvis antwortet in der Sprache, in der du sprichst.">Gilt ab der nächsten Antwort, in Echtzeit ab dem nächsten Gespräch.</span>
+                <span className="cc-hint" title="Automatisch erkennt Deutsch, Englisch oder Ägyptisch (Masri) und wechselt die Antwortsprache.">Gilt ab der nächsten Antwort, in Echtzeit ab dem nächsten Gespräch.</span>
               </label>
             )}
-            {settings.sprache && settings.sprache !== "de" && settings.stimme_arabisch && (
+            {(settings.sprache === "arz" || settings.sprache === "auto") && settings.stimme_arabisch && (
               <label>Stimme für arabische Antworten
                 <select value={settings.stimme_arabisch} disabled={disabled} onChange={(e) => void save({ stimme_arabisch: e.target.value }, "Arabische Stimme")}>
                   {settings.stimmen.map((v) => <option key={v.id} value={v.id}>{v.gruppe ? `${v.gruppe}: ` : ""}{v.name}</option>)}

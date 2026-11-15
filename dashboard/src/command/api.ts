@@ -109,8 +109,8 @@ export type Settings = {
   backup_key?: string | null;
   /** Memory v1: dürfen passende Erinnerungen an Cloud-Anbieter gehen? (Ollama lokal immer) */
   erinnerungen_an_cloud?: boolean; anbieter_cloud?: boolean;
-  /** Gesprächssprache: de, arz (Ägyptisch) oder auto. Fehlt bei älterem Server. */
-  sprache?: "de" | "arz" | "auto"; sprachen?: { id: string; name: string }[]; stimme_arabisch?: string;
+  /** Gesprächssprache: de, en, arz (Ägyptisch) oder auto. Fehlt bei älterem Server. */
+  sprache?: "de" | "en" | "arz" | "auto"; sprachen?: { id: string; name: string }[]; stimme_arabisch?: string;
 };
 export type ModelChoice = {
   key: string; anbieter: "anthropic" | "moonshot" | "ollama"; anbieter_name: string; modell: string; name: string;
