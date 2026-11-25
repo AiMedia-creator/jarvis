@@ -35,3 +35,6 @@ google_*.json
 .claude/settings.local.json
 .idea/
 .vscode/
+
+# Geschäftsunterlagen (Pilot, Gesprächspartner): nur lokal, nicht im öffentlichen Repo
+startup/
